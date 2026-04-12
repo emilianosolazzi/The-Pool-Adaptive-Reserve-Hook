@@ -7,17 +7,19 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {LiquidityAmounts} from "v4-core-test/utils/LiquidityAmounts.sol";
 import {IPositionManager} from "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
 import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 
-contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
+contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     using Math for uint256;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -31,19 +33,29 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
     IPositionManager public immutable positionManager;
     PoolKey public poolKey;
 
-    uint256 public totalLiquidityDeployed; // raw Uniswap L units (for display)
-    uint256 public assetsDeployed;           // token-denominated assets in position (for NAV)
-    uint256 public totalYieldCollected;
+    uint256 public totalLiquidityDeployed;  // raw Uniswap L units (for display)
+    uint256 public assetsDeployed;            // token-denominated assets in position (for NAV)
+    uint256 public totalYieldCollected;       // net asset-token yield credited to depositors
+    uint256 public currency1YieldCollected;   // non-asset-token yield (e.g. WETH in USDC/WETH)
     uint256 public totalDepositors;
     uint256 public lastYieldUpdate;
     uint256 public positionTokenId;
     bool private _poolKeySet;
 
+    address public treasury;          // receives performance fees
+    uint256 public performanceFeeBps; // fee on collected yield; 0 default, max 2000 (20%)
+    uint256 public maxTVL;            // deposit ceiling in asset-token units; 0 = unlimited
+
     event LiquidityDeployed(uint256 amount0, uint256 amount1, uint256 liquidity);
     event LiquidityRemoved(uint256 amount0, uint256 amount1, uint256 liquidity);
     event YieldCollected(uint256 amount, uint256 timestamp);
+    event Currency1YieldCollected(uint256 amount, uint256 timestamp);
+    event PerformanceFeePaid(address indexed treasury, uint256 amount);
     event PoolKeySet(bytes32 indexed poolId);
     event Rebalanced(int24 newTickLower, int24 newTickUpper);
+    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event PerformanceFeeUpdated(uint256 oldBps, uint256 newBps);
+    event MaxTVLUpdated(uint256 oldMax, uint256 newMax);
 
     constructor(
         IERC20 _asset,
@@ -54,6 +66,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
     ) ERC4626(_asset) ERC20(_name, _symbol) Ownable(msg.sender) {
         poolManager = _poolManager;
         positionManager = _posManager;
+        treasury = msg.sender;
     }
 
     function totalAssets() public view override returns (uint256) {
@@ -61,9 +74,10 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
             + assetsDeployed;
     }
 
-    function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256) {
+    function deposit(uint256 assets, address receiver) public override nonReentrant whenNotPaused returns (uint256) {
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
+        if (maxTVL > 0) require(totalAssets() + assets <= maxTVL, "TVL_CAP");
         if (balanceOf(receiver) == 0) totalDepositors++;
 
         uint256 shares = super.deposit(assets, receiver);
@@ -71,11 +85,21 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
         return shares;
     }
 
-    function withdraw(uint256 assets, address receiver, address owner) public override nonReentrant returns (uint256) {
+    function withdraw(uint256 assets, address receiver, address owner) public override nonReentrant whenNotPaused returns (uint256) {
         _collectYield();
         uint256 proportion = assets.mulDiv(1e18, totalAssets());
         _removeLiquidity(proportion);
         return super.withdraw(assets, receiver, owner);
+    }
+
+    function redeem(uint256 shares, address receiver, address owner) public override nonReentrant whenNotPaused returns (uint256) {
+        _collectYield();
+        uint256 assets = convertToAssets(shares);
+        if (assets > 0) {
+            uint256 proportion = assets.mulDiv(1e18, totalAssets());
+            _removeLiquidity(proportion);
+        }
+        return super.redeem(shares, receiver, owner);
     }
 
     function _deployLiquidity(uint256 amount) internal {
@@ -163,11 +187,39 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
         params[1] = abi.encode(poolKey.currency0, poolKey.currency1, address(this));
 
         uint256 balanceBefore = IERC20(asset()).balanceOf(address(this));
+
+        // Track non-asset currency yield only when the other token is a real contract.
+        // Pools may use address(1) or similar sentinels for currency0 in tests/staging.
+        bool assetIsToken0 = Currency.unwrap(poolKey.currency0) == asset();
+        address otherAddr = Currency.unwrap(assetIsToken0 ? poolKey.currency1 : poolKey.currency0);
+        bool hasOtherToken = otherAddr.code.length > 0;
+        uint256 otherBefore = hasOtherToken ? IERC20(otherAddr).balanceOf(address(this)) : 0;
+
         positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+
         uint256 balanceAfter = IERC20(asset()).balanceOf(address(this));
+
+        // Account for non-asset currency yield (e.g. WETH fees in a USDC/WETH pool).
+        // These tokens stay in the vault; owner can extract via rescueIdle(otherAddr).
+        if (hasOtherToken) {
+            uint256 otherAfter = IERC20(otherAddr).balanceOf(address(this));
+            if (otherAfter > otherBefore) {
+                currency1YieldCollected += otherAfter - otherBefore;
+                emit Currency1YieldCollected(otherAfter - otherBefore, block.timestamp);
+            }
+        }
 
         uint256 yieldAmount = balanceAfter - balanceBefore;
         if (yieldAmount > 0) {
+            // Deduct performance fee and route to treasury before crediting depositors
+            if (performanceFeeBps > 0 && treasury != address(0)) {
+                uint256 fee = yieldAmount * performanceFeeBps / 10_000;
+                if (fee > 0) {
+                    IERC20(asset()).transfer(treasury, fee);
+                    yieldAmount -= fee;
+                    emit PerformanceFeePaid(treasury, fee);
+                }
+            }
             totalYieldCollected += yieldAmount;
             emit YieldCollected(yieldAmount, block.timestamp);
         }
@@ -201,9 +253,29 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
     }
 
     function rescueIdle(address token) external onlyOwner {
+        require(token != asset(), "CANNOT_RESCUE_ASSET");
         uint256 idle = IERC20(token).balanceOf(address(this));
         require(idle > 0, "NO_IDLE");
         IERC20(token).transfer(owner(), idle);
+    }
+
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
+    function setTreasury(address newTreasury) external onlyOwner {
+        emit TreasuryUpdated(treasury, newTreasury);
+        treasury = newTreasury;
+    }
+
+    function setPerformanceFeeBps(uint256 newBps) external onlyOwner {
+        require(newBps <= 2000, "FEE_TOO_HIGH");
+        emit PerformanceFeeUpdated(performanceFeeBps, newBps);
+        performanceFeeBps = newBps;
+    }
+
+    function setMaxTVL(uint256 newMax) external onlyOwner {
+        emit MaxTVLUpdated(maxTVL, newMax);
+        maxTVL = newMax;
     }
 
     function getVaultStats() external view returns (uint256 tvl, uint256 sharePrice, uint256 depositors, uint256 liqDeployed, uint256 yieldColl, string memory feeDesc) {

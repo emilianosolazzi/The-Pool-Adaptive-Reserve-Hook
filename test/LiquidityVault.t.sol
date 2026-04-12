@@ -451,4 +451,115 @@ contract LiquidityVaultTest is Test {
 
         // Alice should recover her full deposit within 1 wei of rounding
         assertApproxEqAbs(usdc.balanceOf(alice), assets, 1);
-    }}
+    }
+
+    // ── New feature tests ────────────────────────────────────────────────────
+
+    /// rescueIdle() must revert when called on the vault's own asset token.
+    function test_rescueIdle_assetToken_reverts() public {
+        vm.expectRevert("CANNOT_RESCUE_ASSET");
+        vault.rescueIdle(address(usdc));
+    }
+
+    /// pause() blocks deposit; unpause() re-enables it.
+    function test_pause_blocksDeposit_unpaused() public {
+        vault.setPoolKey(poolKey);
+        vault.pause();
+
+        usdc.mint(alice, 10e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert();
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+
+        vault.unpause();
+
+        vm.startPrank(alice);
+        vault.deposit(10e6, alice); // must succeed after unpause
+        vm.stopPrank();
+        assertGt(vault.balanceOf(alice), 0);
+    }
+
+    /// pause() blocks withdraw.
+    function test_pause_blocksWithdraw() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 10e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+
+        vault.pause();
+
+        uint256 aliceMax = vault.maxWithdraw(alice);
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.withdraw(aliceMax, alice, alice);
+    }
+
+    /// setPerformanceFeeBps validates max 20%; collectYield() routes the fee to treasury.
+    function test_performanceFee_sentToTreasury() public {
+        vault.setPoolKey(poolKey);
+        address myTreasury = makeAddr("myTreasury");
+        vault.setTreasury(myTreasury);
+        vault.setPerformanceFeeBps(1000); // 10%
+
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        uint256 yield = 20e6;
+        usdc.mint(address(mockPosMgr), yield);
+        mockPosMgr.queueYield(address(vault), address(usdc), yield);
+        vault.collectYield();
+
+        uint256 expectedFee = yield * 1000 / 10_000; // 2e6
+        assertEq(usdc.balanceOf(myTreasury), expectedFee);
+        assertEq(vault.totalYieldCollected(), yield - expectedFee); // 18e6 net to depositors
+        assertEq(vault.totalAssets(), 100e6 + (yield - expectedFee));
+    }
+
+    /// setPerformanceFeeBps reverts above 2000 (20%).
+    function test_performanceFeeBps_maxValidation() public {
+        vm.expectRevert("FEE_TOO_HIGH");
+        vault.setPerformanceFeeBps(2001);
+
+        vault.setPerformanceFeeBps(2000); // exactly 20% — must succeed
+        assertEq(vault.performanceFeeBps(), 2000);
+    }
+
+    /// Deposits that would push TVL over maxTVL are rejected.
+    function test_maxTVL_enforced() public {
+        vault.setPoolKey(poolKey);
+        vault.setMaxTVL(50e6); // 50 USDC cap
+
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(40e6, alice);    // 40 USDC — fits
+        vm.expectRevert("TVL_CAP");
+        vault.deposit(20e6, alice);    // would push to 60 USDC — rejected
+        vm.stopPrank();
+    }
+
+    /// setTreasury is owner-only and updates the treasury address.
+    function test_setTreasury_ownerOnly() public {
+        address newTreasury = makeAddr("newTreasury");
+
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setTreasury(newTreasury);
+
+        vault.setTreasury(newTreasury);
+        assertEq(vault.treasury(), newTreasury);
+    }
+
+    /// Treasury is initialized to the deployer (owner) at construction.
+    function test_treasury_initializedToDeployer() public view {
+        assertEq(vault.treasury(), owner);
+    }
+}
