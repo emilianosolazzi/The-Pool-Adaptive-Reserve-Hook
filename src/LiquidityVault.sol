@@ -94,6 +94,7 @@ contract LiquidityVault is ERC4626, Ownable, ReentrancyGuard {
             params[0] = abi.encode(poolKey, TICK_LOWER, TICK_UPPER, liquidity, amount, amount, address(this), "");
             params[1] = abi.encode(poolKey.currency0, poolKey.currency1);
 
+            IERC20(asset()).approve(address(positionManager), amount);
             uint256 expectedTokenId = positionManager.nextTokenId();
             positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
             positionTokenId = expectedTokenId;
@@ -103,6 +104,7 @@ contract LiquidityVault is ERC4626, Ownable, ReentrancyGuard {
             params[0] = abi.encode(positionTokenId, liquidity, amount, amount, "");
             params[1] = abi.encode(poolKey.currency0, poolKey.currency1);
 
+            IERC20(asset()).approve(address(positionManager), amount);
             positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
         }
 
