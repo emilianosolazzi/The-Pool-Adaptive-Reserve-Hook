@@ -31,7 +31,8 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
     IPositionManager public immutable positionManager;
     PoolKey public poolKey;
 
-    uint256 public totalLiquidityDeployed;
+    uint256 public totalLiquidityDeployed; // raw Uniswap L units (for display)
+    uint256 public assetsDeployed;           // token-denominated assets in position (for NAV)
     uint256 public totalYieldCollected;
     uint256 public totalDepositors;
     uint256 public lastYieldUpdate;
@@ -57,7 +58,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
 
     function totalAssets() public view override returns (uint256) {
         return IERC20(asset()).balanceOf(address(this))
-            + totalLiquidityDeployed;
+            + assetsDeployed;
     }
 
     function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256) {
@@ -97,8 +98,11 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
 
             IERC20(asset()).approve(address(positionManager), amount);
             uint256 expectedTokenId = positionManager.nextTokenId();
+            uint256 balBefore = IERC20(asset()).balanceOf(address(this));
             positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+            uint256 spent = balBefore - IERC20(asset()).balanceOf(address(this));
             positionTokenId = expectedTokenId;
+            assetsDeployed += spent;
         } else {
             bytes memory actions = abi.encodePacked(uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.SETTLE_PAIR));
             bytes[] memory params = new bytes[](2);
@@ -106,7 +110,10 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
             params[1] = abi.encode(poolKey.currency0, poolKey.currency1);
 
             IERC20(asset()).approve(address(positionManager), amount);
+            uint256 balBefore = IERC20(asset()).balanceOf(address(this));
             positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+            uint256 spent = balBefore - IERC20(asset()).balanceOf(address(this));
+            assetsDeployed += spent;
         }
 
         totalLiquidityDeployed += liquidity;
@@ -134,8 +141,16 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
         params[1] = abi.encode(poolKey.currency0, poolKey.currency1, address(this));
         params[2] = abi.encode(poolKey.currency0, address(this));
 
+        uint256 balBefore = IERC20(asset()).balanceOf(address(this));
         positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+        uint256 returned = IERC20(asset()).balanceOf(address(this)) - balBefore;
         totalLiquidityDeployed -= liquidityToRemove;
+        // assetsDeployed decreases by what was actually returned from the position
+        if (returned >= assetsDeployed) {
+            assetsDeployed = 0;
+        } else {
+            assetsDeployed -= returned;
+        }
         emit LiquidityRemoved(0, 0, liquidityToRemove);
     }
 
@@ -195,7 +210,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard {
         tvl = totalAssets();
         sharePrice = totalSupply() == 0 ? 1e18 : tvl.mulDiv(1e18, totalSupply());
         depositors = totalDepositors;
-        liqDeployed = totalLiquidityDeployed;
+        liqDeployed = assetsDeployed;
         yieldColl = totalYieldCollected;
         feeDesc = "0.01% Base LP + 0.20% Yield Bonus via Hook";
     }

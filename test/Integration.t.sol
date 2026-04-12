@@ -29,7 +29,7 @@ contract IntegrationTest is Test, Deployers {
 
     uint256 constant HOOK_FEE_BPS = 30;
     uint256 constant BPS_DENOM = 10_000;
-    uint256 constant MAX_FEE = 0.02 ether;
+    uint256 constant MAX_FEE_BPS = 50;  // 0.5% of amountIn — matches hook.maxFeeBps default
     uint256 constant TREASURY_SHARE = 20;
 
     function setUp() public {
@@ -100,20 +100,25 @@ contract IntegrationTest is Test, Deployers {
         assertEq(distributor.distributionCount(), 1);
     }
 
-    // ── Fee cap at MAX_FEE_PER_SWAP = 0.02 ether ─────────────────────────────
+    // ── Fee cap at MAX_FEE_BPS = 50 BPS of amountIn ─────────────────────────
 
     function test_feeCap_largeSwap() public {
         uint256 amountIn = 100 ether;
-        uint256 uncappedFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM; // 0.3 ether
-        assertTrue(uncappedFee > MAX_FEE, "precondition: fee exceeds cap");
+        uint256 uncappedFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM; // 30 BPS of 100 ETH
+        uint256 cappedFee   = (amountIn * MAX_FEE_BPS)  / BPS_DENOM; // 50 BPS of 100 ETH
+        // 30 BPS < 50 BPS cap → fee is NOT capped; cap only triggers when base > MAX_FEE_BPS.
+        // Lower the cap for this test so the cap triggers.
+        hook.setMaxFeeBps(20); // 20 BPS cap < 30 BPS base
+        uint256 expectedFee = (amountIn * 20) / BPS_DENOM;
+        assertTrue(uncappedFee > expectedFee, "precondition: base fee exceeds 20bps cap");
 
         uint256 treasuryBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
 
         swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
 
-        uint256 expectedTreasury = (MAX_FEE * TREASURY_SHARE) / 100;
+        uint256 expectedTreasury = (expectedFee * TREASURY_SHARE) / 100;
 
-        assertEq(hook.totalFeesRouted(), MAX_FEE);
+        assertEq(hook.totalFeesRouted(), expectedFee);
         assertEq(
             MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - treasuryBefore,
             expectedTreasury

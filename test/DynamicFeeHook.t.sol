@@ -58,16 +58,21 @@ contract DynamicFeeHookTest is Test {
     }
 
     function test_feeCalculation_smallSwap() public view {
-        // 1e18 * 30 / 10000 = 3e15, well below 0.02 ether cap
+        // 1e18 * 30 / 10000 = 3e15; cap is 50 BPS of amountIn = 5e15 → base fee wins
         uint256 amountIn = 1e18;
         (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
         assertEq(feeAmount, (amountIn * 30) / 10_000);
     }
 
     function test_feeCalculation_cappedAtMax() public view {
+        // HOOK_FEE_BPS=30, maxFeeBps=50 → cap = 50 BPS, base = 30 BPS → base always wins
+        // Make amountIn huge so even 30 BPS > 50 BPS of a smaller reference — not possible
+        // Actually 30 < 50 so the fee is always the 30 BPS leg unless maxFeeBps < 30.
+        // Verify via an explicit lower cap set in the next test.
         uint256 amountIn = 1e22;
         (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
-        assertEq(feeAmount, 0.02 ether);
+        // 30 BPS of 1e22 = 3e19, cap = 50 BPS of 1e22 = 5e19 → base wins
+        assertEq(feeAmount, (amountIn * 30) / 10_000);
     }
 
     function test_beforeSwap_noFeeForMismatchedKey() public {
@@ -147,22 +152,29 @@ contract DynamicFeeHookTest is Test {
 
     // ── Setter & access-control tests ───────────────────────────────────────
 
-    /// Owner can lower the fee cap; getSwapFeeInfo respects the new value.
-    function test_setMaxFeePerSwap_updatesAndEnforces() public {
-        uint256 newMax = 0.005 ether; // tighter than default 0.02 ether
-        hook.setMaxFeePerSwap(newMax);
-        assertEq(hook.maxFeePerSwap(), newMax);
+    /// Owner can lower the fee cap; getSwapFeeInfo and beforeSwap respect the new value.
+    function test_setMaxFeeBps_updatesAndEnforces() public {
+        // Lower the cap below HOOK_FEE_BPS so the cap triggers
+        uint256 newCapBps = 20; // 20 BPS < 30 BPS base fee
+        hook.setMaxFeeBps(newCapBps);
+        assertEq(hook.maxFeeBps(), newCapBps);
 
-        // A swap large enough to exceed even the old cap should now return newMax
-        (uint256 fee,,,,) = hook.getSwapFeeInfo(1e22);
-        assertEq(fee, newMax);
+        uint256 amountIn = 1e18;
+        (uint256 fee,,,,) = hook.getSwapFeeInfo(amountIn);
+        assertEq(fee, (amountIn * newCapBps) / 10_000);
     }
 
     /// Non-owner cannot adjust the fee cap.
-    function test_setMaxFeePerSwap_onlyOwner() public {
+    function test_setMaxFeeBps_onlyOwner() public {
         vm.prank(makeAddr("rando"));
         vm.expectRevert();
-        hook.setMaxFeePerSwap(1e18);
+        hook.setMaxFeeBps(10);
+    }
+
+    /// setMaxFeeBps reverts if caller passes more than 10 000 BPS.
+    function test_setMaxFeeBps_revertOnOverflow() public {
+        vm.expectRevert("BPS_TOO_HIGH");
+        hook.setMaxFeeBps(10_001);
     }
 
     /// Owner can point the hook at a new distributor.
@@ -195,11 +207,11 @@ contract DynamicFeeHookTest is Test {
 
     // ── Fuzz tests ───────────────────────────────────────────────────────────
 
-    /// Fee must never exceed maxFeePerSwap for any amountIn.
+    /// Fee must never exceed maxFeeBps fraction of amountIn for any amountIn.
     function testFuzz_feeCalculation_capAlwaysRespected(uint256 amountIn) public view {
-        // Avoid overflow in the multiply: 30 * amountIn must fit in uint256
         amountIn = bound(amountIn, 0, type(uint256).max / 10_000);
         (uint256 fee,,,,) = hook.getSwapFeeInfo(amountIn);
-        assertLe(fee, hook.maxFeePerSwap());
+        uint256 cap = (amountIn * hook.maxFeeBps()) / 10_000;
+        assertLe(fee, cap == 0 ? 0 : cap + 1); // allow 1 wei rounding
     }
 }

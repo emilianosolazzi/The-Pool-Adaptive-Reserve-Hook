@@ -27,6 +27,9 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     uint24 public constant LP_FEE = 100;
     uint256 public constant HOOK_FEE_BPS = 30;
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    /// @dev Hard ceiling in BPS: hook fee can never exceed this fraction of amountIn.
+    ///      Default 50 BPS (0.5%). Owner-adjustable. Currency-agnostic.
+    uint256 public maxFeeBps = 50;
 
     uint256 private constant VOLATILITY_THRESHOLD_BPS = 100; // 1% inter-swap price move
     uint256 private constant VOLATILITY_FEE_MULTIPLIER = 150; // 1.5x fee in volatile regime
@@ -37,14 +40,13 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         0x2977767698129b4908fb9b19423b38883970765ad9aba8979e231f45612fa01e;
 
     IFeeDistributor public feeDistributor;
-    uint256 public maxFeePerSwap = 0.02 ether;
     uint160 private lastSqrtPriceX96;
     uint256 public totalSwaps;
     uint256 public totalFeesRouted;
 
     event FeeRouted(address indexed currency, uint256 amount, uint256 swapIndex);
     event DistributorUpdated(address indexed old, address indexed newDistributor);
-    event MaxFeeUpdated(uint256 oldMax, uint256 newMax);
+    event MaxFeeBpsUpdated(uint256 oldBps, uint256 newBps);
 
     constructor(IPoolManager _poolManager, address _distributor) BaseHook(_poolManager) Ownable(msg.sender) {
         feeDistributor = IFeeDistributor(_distributor);
@@ -89,7 +91,8 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
             }
         }
 
-        if (fee > maxFeePerSwap) fee = maxFeePerSwap;
+        uint256 feeCap = (amountIn * maxFeeBps) / BPS_DENOMINATOR;
+        if (fee > feeCap) fee = feeCap;
 
         Currency feeCurrency = params.zeroForOne ? key.currency1 : key.currency0;
         uint256 currencyAsUint = uint256(uint160(Currency.unwrap(feeCurrency)));
@@ -140,7 +143,8 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         returns (uint256 feeAmount, uint256 feeBps, uint256 treasuryBps, uint256 lpBonusBps, string memory description)
     {
         feeAmount = (amountIn * HOOK_FEE_BPS) / BPS_DENOMINATOR;
-        if (feeAmount > maxFeePerSwap) feeAmount = maxFeePerSwap;
+        uint256 feeCap = (amountIn * maxFeeBps) / BPS_DENOMINATOR;
+        if (feeAmount > feeCap) feeAmount = feeCap;
 
         feeBps = HOOK_FEE_BPS;
         treasuryBps = 10;
@@ -152,9 +156,10 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         return (totalSwaps, totalFeesRouted, address(feeDistributor));
     }
 
-    function setMaxFeePerSwap(uint256 newMax) external onlyOwner {
-        emit MaxFeeUpdated(maxFeePerSwap, newMax);
-        maxFeePerSwap = newMax;
+    function setMaxFeeBps(uint256 newBps) external onlyOwner {
+        require(newBps <= BPS_DENOMINATOR, "BPS_TOO_HIGH");
+        emit MaxFeeBpsUpdated(maxFeeBps, newBps);
+        maxFeeBps = newBps;
     }
 
     function setFeeDistributor(address newDistributor) external onlyOwner {
