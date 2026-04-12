@@ -153,4 +153,214 @@ contract LiquidityVaultTest is Test {
     function test_getProjectedAPY_zeroWithNoAssets() public view {
         assertEq(vault.getProjectedAPY(1e6, 365 days), 0);
     }
+
+    // ── ERC-4626 Performance Tests ───────────────────────────────────────────
+
+    /// First depositor receives exactly 1 share per asset (no virtual offset inflation).
+    function test_4626_initialDeposit_oneToOne() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 100e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        assertEq(shares, 100e6);
+        assertEq(vault.totalAssets(), 100e6);
+    }
+
+    /// After yield is collected, share price (assets per share) rises above 1:1.
+    function test_4626_sharePrice_appreciates_afterYield() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 100e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        // Simulate 10 USDC yield arriving via the position manager
+        uint256 yield = 10e6;
+        usdc.mint(address(mockPosMgr), yield);
+        mockPosMgr.queueYield(address(vault), address(usdc), yield);
+        vault.collectYield();
+
+        // totalAssets grew; each share is worth more than 1 USDC
+        assertEq(vault.totalAssets(), 110e6);
+        assertEq(vault.totalYieldCollected(), yield);
+        assertGt(vault.convertToAssets(shares), 100e6);
+    }
+
+    /// An early depositor captures yield accrued before a late depositor arrives.
+    function test_4626_earlyDepositor_advantaged_overLate() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 100e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 aliceShares = vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        // 20 USDC yield accrues before Bob arrives
+        uint256 yield = 20e6;
+        usdc.mint(address(mockPosMgr), yield);
+        mockPosMgr.queueYield(address(vault), address(usdc), yield);
+        vault.collectYield();
+
+        // Bob deposits the same amount but now gets fewer shares
+        usdc.mint(bob, 100e6);
+        vm.startPrank(bob);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 bobShares = vault.deposit(100e6, bob);
+        vm.stopPrank();
+
+        assertLt(bobShares, aliceShares); // diluted entry
+
+        // Alice withdraws all her principal + yield
+        uint256 aliceMax = vault.maxWithdraw(alice);
+        vm.prank(alice);
+        vault.withdraw(aliceMax, alice, alice);
+
+        assertGt(aliceMax, 100e6); // Alice profitable
+    }
+
+    /// Two equal depositors split yield proportionally (each gets half).
+    function test_4626_proportional_twoDepositors_splitYield() public {
+        vault.setPoolKey(poolKey);
+        uint256 amt = 100e6;
+
+        usdc.mint(alice, amt);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 aliceShares = vault.deposit(amt, alice);
+        vm.stopPrank();
+
+        usdc.mint(bob, amt);
+        vm.startPrank(bob);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 bobShares = vault.deposit(amt, bob);
+        vm.stopPrank();
+
+        assertEq(aliceShares, bobShares); // equal deposits → equal shares
+
+        // Inject 20 USDC yield (split equally)
+        uint256 yield = 20e6;
+        usdc.mint(address(mockPosMgr), yield);
+        mockPosMgr.queueYield(address(vault), address(usdc), yield);
+        vault.collectYield();
+
+        uint256 aliceMax = vault.maxWithdraw(alice);
+        vm.prank(alice);
+        vault.withdraw(aliceMax, alice, alice);
+
+        uint256 bobMax = vault.maxWithdraw(bob);
+        vm.prank(bob);
+        vault.withdraw(bobMax, bob, bob);
+
+        // Each gets ≈ 110 USDC (100 principal + 10 yield), within 2 wei rounding
+        assertApproxEqAbs(aliceMax, amt + yield / 2, 2);
+        assertApproxEqAbs(bobMax,   amt + yield / 2, 2);
+    }
+
+    /// After yield accrues, the same USDC amount buys fewer shares (share price rose).
+    function test_4626_convertToShares_decreases_afterYield() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 100e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        uint256 sharesBefore = vault.convertToShares(100e6);
+
+        // Double the vault assets via yield
+        uint256 yield = 100e6;
+        usdc.mint(address(mockPosMgr), yield);
+        mockPosMgr.queueYield(address(vault), address(usdc), yield);
+        vault.collectYield();
+
+        uint256 sharesAfter = vault.convertToShares(100e6);
+
+        // 100 USDC buys half as many shares now that TVL doubled
+        assertLt(sharesAfter, sharesBefore);
+        assertApproxEqAbs(sharesAfter, sharesBefore / 2, 2);
+    }
+
+    /// getProjectedAPY returns correct basis-points for a known yield/tvl/window.
+    function test_4626_projectedAPY_math() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 1000e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(1000e6, alice);
+        vm.stopPrank();
+
+        // 10 USDC over 30 days on 1000 USDC TVL ≈ 12.17% APY = 1216 BPS
+        uint256 aprBps = vault.getProjectedAPY(10e6, 30 days);
+        assertGe(aprBps, 1210);
+        assertLe(aprBps, 1225);
+    }
+
+    /// rebalance() updates tick boundaries and reseeds the position.
+    function test_4626_rebalance_updatesTickRange() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 10e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+
+        int24 newLower = -300000;
+        int24 newUpper = -100000;
+        vault.rebalance(newLower, newUpper);
+
+        assertEq(vault.tickLower(), newLower);
+        assertEq(vault.tickUpper(), newUpper);
+        assertGt(vault.positionTokenId(), 0); // new position seeded
+    }
+
+    /// rebalance() must not change the vault's NAV (no value leaked to mock).
+    function test_4626_rebalance_preservesNAV() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 100e6);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        uint256 navBefore = vault.totalAssets();
+        vault.rebalance(-300000, -100000);
+        uint256 navAfter = vault.totalAssets();
+
+        assertEq(navAfter, navBefore);
+    }
+
+    /// Non-owner cannot call rebalance().
+    function test_4626_rebalance_onlyOwner() public {
+        vault.setPoolKey(poolKey);
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.rebalance(-300000, -100000);
+    }
+
+    /// Ownable2Step: transferOwnership alone must not change the active owner;
+    /// acceptOwnership() by the pending owner completes the handoff.
+    function test_4626_ownable2step_requiresAccept() public {
+        address newOwner = makeAddr("newOwner");
+
+        vault.transferOwnership(newOwner);
+
+        assertEq(vault.owner(),        owner);    // still old owner
+        assertEq(vault.pendingOwner(), newOwner); // queued
+
+        vm.prank(newOwner);
+        vault.acceptOwnership();
+
+        assertEq(vault.owner(), newOwner); // handoff complete
+    }
 }
