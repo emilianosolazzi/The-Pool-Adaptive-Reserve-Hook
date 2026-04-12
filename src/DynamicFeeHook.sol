@@ -123,7 +123,7 @@ contract DynamicFeeHook is BaseHook {
         feeBps = HOOK_FEE_BPS;
         treasuryBps = 10;
         lpBonusBps = 20;
-        description = "0.01% Base LP + 0.30% Hook Fee (33% Treasury / 67% LP Bonus)";
+        description = "0.01% Base LP + 0.30% Hook Fee (20% Treasury / 80% LP Bonus)";
     }
 
     function getStats() external view returns (uint256, uint256, address) {
