@@ -41,6 +41,7 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
 
     IFeeDistributor public feeDistributor;
     uint160 private lastSqrtPriceX96;
+    uint256 private lastSwapBlock; // anti-sandwich: reference price updates only at block boundaries
     uint256 public totalSwaps;
     uint256 public totalFeesRouted;
 
@@ -132,7 +133,14 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         emit FeeRouted(Currency.unwrap(feeCurrency), fee, totalSwaps);
 
         (uint160 sqrtAfter,,,) = poolManager.getSlot0(key.toId());
-        lastSqrtPriceX96 = sqrtAfter;
+        // Only refresh the reference price at block boundaries.
+        // Same-block sandwich: attacker's "reset" swap and "exploit" swap share the same block
+        // → lastSqrtPriceX96 does not update between them → exploit swap still sees the
+        // large inter-block price delta and pays the 1.5× volatility multiplier.
+        if (block.number > lastSwapBlock) {
+            lastSqrtPriceX96 = sqrtAfter;
+            lastSwapBlock = block.number;
+        }
 
         return (BaseHook.afterSwap.selector, int128(uint128(fee)));
     }
