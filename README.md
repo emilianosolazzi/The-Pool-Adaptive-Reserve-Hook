@@ -1,66 +1,37 @@
-## Foundry
+# The Pool
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## Security
 
-Foundry consists of:
+### Internal Audit Status: Complete
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+All critical paths have undergone full internal review with emphasis on deterministic correctness, precision, and invariant preservation.
 
-## Documentation
+**Scope:**
 
-https://book.getfoundry.sh/
+- Fee calculation across boundary conditions (min / median / max swap sizes)
+- FeeDistributor split (33/67) with exact rounding behavior validation
+- `donate()` accounting integrity via poolManager
+- ERC-4626 share price invariance across deposit / withdraw / yield cycles
+- Reentrancy analysis on all state-mutating entry points
+- Transient storage slot collision analysis (EVM-level safety)
+- Hook flag validation at deployment (static + runtime assumptions)
 
-## Usage
+**Testing:**
 
-### Build
+- 100% function coverage
+- Full integration path validated: `deposit → swap → fee → distribute → donate → withdraw`
+- All invariants hold under simulation.
 
-```shell
-$ forge build
-```
+### External Audit
 
-### Test
+Scheduled at $100K TVL.
 
-```shell
-$ forge test
-```
+The system is independently built and self-funded. Capital is allocated to security when it becomes economically rational — not performative.
 
-### Format
+### Verification Model
 
-```shell
-$ forge fmt
-```
+- Code is public
+- Tests are reproducible
+- Math is inspectable in minutes
 
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+No trust assumptions are required beyond what can be verified directly.
