@@ -54,8 +54,7 @@ contract LiquidityVault is ERC4626, Ownable, ReentrancyGuard {
 
     function totalAssets() public view override returns (uint256) {
         return IERC20(asset()).balanceOf(address(this))
-            + totalLiquidityDeployed
-            + totalYieldCollected;
+            + totalLiquidityDeployed;
     }
 
     function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256) {
@@ -175,7 +174,7 @@ contract LiquidityVault is ERC4626, Ownable, ReentrancyGuard {
         depositors = totalDepositors;
         liqDeployed = totalLiquidityDeployed;
         yieldColl = totalYieldCollected;
-        feeDesc = "0.01% Base LP + 0.02% Yield Bonus via Hook";
+        feeDesc = "0.01% Base LP + 0.20% Yield Bonus via Hook";
     }
 
     function getProjectedAPY(uint256 recentYield, uint256 windowSeconds) external view returns (uint256 aprBps) {
