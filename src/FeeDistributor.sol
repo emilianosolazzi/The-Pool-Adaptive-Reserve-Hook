@@ -46,11 +46,9 @@ contract FeeDistributor is Ownable, ReentrancyGuard {
         uint256 treasuryAmount = (amount * TREASURY_SHARE) / SHARE_DENOMINATOR;
         uint256 lpAmount = amount - treasuryAmount;
 
-        // Route to Treasury
         currency.transfer(treasury, treasuryAmount);
         totalToTreasury += treasuryAmount;
 
-        // Route to LPs via donate()
         bool isToken0 = (currency == poolKey.currency0);
         uint256 amount0 = isToken0 ? lpAmount : 0;
         uint256 amount1 = isToken0 ? 0 : lpAmount;

@@ -33,18 +33,10 @@ contract DynamicFeeHookTest is Test {
         mockManager    = new MockPoolManager();
         mockDistributor = new MockFeeDistributor();
 
-        // Two tokens — ensure token0 < token1 by address
         MockERC20 tA = new MockERC20("Token A", "TKA", 18);
         MockERC20 tB = new MockERC20("Token B", "TKB", 18);
-        if (address(tA) < address(tB)) {
-            token0 = tA;
-            token1 = tB;
-        } else {
-            token0 = tB;
-            token1 = tA;
-        }
+        (token0, token1) = address(tA) < address(tB) ? (tA, tB) : (tB, tA);
 
-        // Mine a salt for DynamicFeeHook that gives an address with BEFORE_SWAP | AFTER_SWAP flags
         uint160 flags = Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG;
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
@@ -54,7 +46,7 @@ contract DynamicFeeHookTest is Test {
         );
 
         hook = new DynamicFeeHook{salt: salt}(IPoolManager(address(mockManager)), address(mockDistributor));
-        assertEq(address(hook), hookAddr, "hook address mismatch");
+        assertEq(address(hook), hookAddr);
 
         poolKey = PoolKey({
             currency0: Currency.wrap(address(token0)),
@@ -65,61 +57,31 @@ contract DynamicFeeHookTest is Test {
         });
     }
 
-    // ─── 1. Pure fee math — small swap (below cap) ────────────────────────────
-
     function test_feeCalculation_smallSwap() public view {
-        // 1e18 → fee = 1e18 * 30 / 10000 = 3e15 < 0.02 ether cap
+        // 1e18 * 30 / 10000 = 3e15, well below 0.02 ether cap
         uint256 amountIn = 1e18;
-        uint256 expected = (amountIn * 30) / 10_000;
-        (uint256 feeAmount,,,, ) = _swapFeeInfo(amountIn);
-        assertEq(feeAmount, expected);
+        (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
+        assertEq(feeAmount, (amountIn * 30) / 10_000);
     }
-
-    // ─── 2. Fee cap at MAX_FEE_PER_SWAP ──────────────────────────────────────
 
     function test_feeCalculation_cappedAtMax() public view {
-        // 1e22 → uncapped fee = 1e22 * 30 / 10000 = 3e19 >> 0.02 ether
         uint256 amountIn = 1e22;
-        uint256 uncapped = (amountIn * 30) / 10_000;
-
-        (uint256 feeAmount,,,, ) = _swapFeeInfo(amountIn);
-        if (uncapped > 0.02 ether) {
-            assertEq(feeAmount, 0.02 ether);
-        } else {
-            assertEq(feeAmount, uncapped);
-        }
+        (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
+        assertEq(feeAmount, 0.02 ether);
     }
 
-    // ─── 3. beforeSwap: no fee when key.hooks != hook ────────────────────────
-
     function test_beforeSwap_noFeeForMismatchedKey() public {
-        PoolKey memory wrongKey = PoolKey({
-            currency0: Currency.wrap(address(token0)),
-            currency1: Currency.wrap(address(token1)),
-            fee: FEE,
-            tickSpacing: TICK_SPACING,
-            hooks: hook  // correct hooks address
-        });
-        // Swap 0→1 with exact input
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1e18,
-            sqrtPriceLimitX96: 0
-        });
-
-        // Override key.hooks to something else so the early-return path triggers
+        PoolKey memory wrongKey = poolKey;
         wrongKey.hooks = DynamicFeeHook(payable(address(0xdead)));
 
+        SwapParams memory params = SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
         (bytes4 sel, , ) = hook.beforeSwap(address(this), wrongKey, params, "");
+
         assertEq(sel, DynamicFeeHook.beforeSwap.selector);
-        // totalSwaps must NOT increment (early return)
         assertEq(hook.totalSwaps(), 0);
     }
 
-    // ─── 4. beforeSwap → afterSwap: fee routed to distributor ────────────────
-
     function test_afterSwap_routesFeeToDistributor() public {
-        // 1e18 → fee = 3e15 (well below 0.02 ether cap)
         uint256 amountIn = 1e18;
         uint256 expectedFee = (amountIn * 30) / 10_000;
 
@@ -129,27 +91,21 @@ contract DynamicFeeHookTest is Test {
             sqrtPriceLimitX96: 0
         });
 
-        // Pre-fund MockPoolManager with token1 so take() can succeed
         token1.mint(address(mockManager), expectedFee);
-
-        // Call beforeSwap to load transient storage
         hook.beforeSwap(address(this), poolKey, params, "");
         assertEq(hook.totalSwaps(), 1);
 
-        // Call afterSwap — hook will do take → transfer → distribute
-        BalanceDelta delta = toBalanceDelta(0, 0);
-        hook.afterSwap(address(this), poolKey, params, delta, "");
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
 
         assertEq(mockDistributor.callCount(), 1);
         assertEq(mockDistributor.lastAmount(), expectedFee);
         assertEq(hook.totalFeesRouted(), expectedFee);
     }
 
-    // ─── 5. Transient storage cleared after afterSwap ────────────────────────
-
     function test_transientStorage_clearedAfterAfterSwap() public {
         uint256 amountIn = 1e18;
         uint256 fee = (amountIn * 30) / 10_000;
+        BalanceDelta delta = toBalanceDelta(0, 0);
 
         SwapParams memory params = SwapParams({
             zeroForOne: true,
@@ -159,21 +115,14 @@ contract DynamicFeeHookTest is Test {
 
         token1.mint(address(mockManager), fee);
         hook.beforeSwap(address(this), poolKey, params, "");
-
-        BalanceDelta delta = toBalanceDelta(0, 0);
         hook.afterSwap(address(this), poolKey, params, delta, "");
 
-        // A second afterSwap in the same tx should see fee=0 (transient cleared)
-        // and therefore NOT call distributor again
-        uint256 beforeCount = mockDistributor.callCount();
+        uint256 countBefore = mockDistributor.callCount();
         hook.afterSwap(address(this), poolKey, params, delta, "");
-        assertEq(mockDistributor.callCount(), beforeCount, "distributor called with stale transient data");
+        assertEq(mockDistributor.callCount(), countBefore);
     }
 
-    // ─── 6. Stats accumulate over multiple swaps ──────────────────────────────
-
     function test_stats_accumulateAcrossSwaps() public {
-        // 1e18 → fee = 3e15 per swap (below cap)
         uint256 amountIn = 1e18;
         uint256 feePerSwap = (amountIn * 30) / 10_000;
         uint256 swaps = 3;
@@ -183,33 +132,16 @@ contract DynamicFeeHookTest is Test {
             amountSpecified: -int256(amountIn),
             sqrtPriceLimitX96: 0
         });
-        BalanceDelta delta = toBalanceDelta(0, 0);
 
         token1.mint(address(mockManager), feePerSwap * swaps);
 
         for (uint256 i = 0; i < swaps; i++) {
             hook.beforeSwap(address(this), poolKey, params, "");
-            hook.afterSwap(address(this), poolKey, params, delta, "");
+            hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
         }
 
         assertEq(hook.totalSwaps(), swaps);
         assertEq(hook.totalFeesRouted(), feePerSwap * swaps);
         assertEq(mockDistributor.callCount(), swaps);
-    }
-
-    // ─── helpers ─────────────────────────────────────────────────────────────
-
-    function _swapFeeInfo(uint256 amountIn)
-        internal
-        view
-        returns (
-            uint256 feeAmount,
-            uint256 feeBps,
-            uint256 treasuryBps,
-            uint256 lpBonusBps,
-            string memory description
-        )
-    {
-        return hook.getSwapFeeInfo(amountIn);
     }
 }

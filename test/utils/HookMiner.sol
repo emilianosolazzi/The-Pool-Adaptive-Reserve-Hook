@@ -7,10 +7,8 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 library HookMiner {
     uint256 internal constant MAX_LOOP = 200_000;
 
-    /// @param deployer  The address that will call `new Hook{salt: s}(...)` (usually address(this) in tests)
-    /// @param flags     The exact lower-14-bit mask required (e.g. BEFORE_SWAP_FLAG | AFTER_SWAP_FLAG)
-    /// @param creationCode  `type(MyHook).creationCode`
-    /// @param constructorArgs  `abi.encode(arg0, arg1, ...)`
+    /// @param deployer  address that will call `new Hook{salt}(...)`
+    /// @param flags     required lower-14-bit mask (e.g. BEFORE_SWAP_FLAG | AFTER_SWAP_FLAG)
     function find(
         address deployer,
         uint160 flags,

@@ -3,7 +3,7 @@ pragma solidity 0.8.30;
 
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
-/// @dev Records distribute() calls without routing funds anywhere.
+/// @dev Minimal stub. Records distribute() calls.
 contract MockFeeDistributor {
     Currency public lastCurrency;
     uint256 public lastAmount;

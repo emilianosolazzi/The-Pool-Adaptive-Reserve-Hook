@@ -11,13 +11,10 @@ import {BalanceDelta, toBalanceDelta} from "@uniswap/v4-core/src/types/BalanceDe
 contract MockPoolManager {
     event DonateRecorded(uint256 amount0, uint256 amount1);
 
-    /// @notice Simulates take(): transfers `amount` of `currency` from this contract to `to`.
-    ///         Tests must pre-fund this contract with the relevant token.
     function take(Currency currency, address to, uint256 amount) external {
         IERC20(Currency.unwrap(currency)).transfer(to, amount);
     }
 
-    /// @notice Simulates donate(): tokens are assumed already sent; just emit and return.
     function donate(PoolKey calldata, uint256 amount0, uint256 amount1, bytes calldata)
         external
         returns (BalanceDelta)
@@ -26,16 +23,12 @@ contract MockPoolManager {
         return toBalanceDelta(0, 0);
     }
 
-    /// @notice Stub for initialize — not used in unit tests but callable.
     function initialize(PoolKey calldata, uint160) external pure returns (int24) {
         return 0;
     }
 
-    /// @notice Stub for extsload used by StateLibrary.getSlot0.
-    ///         Returns sqrtPriceX96 = 1 in the lower 160 bits (tick 0, fees 0).
-    ///         With sqrtPriceX96 = 1 the LiquidityAmounts math yields 0 liquidity,
-    ///         which keeps vault accounting clean in unit tests.
+    // sqrtPriceX96 = 1 in lowest 160 bits; yields 0 liquidity in LiquidityAmounts which keeps vault accounting clean
     function extsload(bytes32) external pure returns (bytes32) {
-        return bytes32(uint256(1)); // sqrtPriceX96 = 1
+        return bytes32(uint256(1));
     }
 }
