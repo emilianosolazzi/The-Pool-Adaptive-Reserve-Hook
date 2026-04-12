@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity >=0.8.24 <0.9.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -21,6 +21,12 @@ contract MockPoolManager {
     {
         emit DonateRecorded(amount0, amount1);
         return toBalanceDelta(0, 0);
+    }
+
+    function sync(Currency) external {}
+
+    function settle() external payable returns (uint256) {
+        return 0;
     }
 
     function initialize(PoolKey calldata, uint160) external pure returns (int24) {

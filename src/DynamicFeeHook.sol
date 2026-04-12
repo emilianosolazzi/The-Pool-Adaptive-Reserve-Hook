@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity >=0.8.24 <0.9.0;
 
 import {BaseHook} from "./BaseHook.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
@@ -54,7 +54,7 @@ contract DynamicFeeHook is BaseHook {
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
+            afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
@@ -109,7 +109,7 @@ contract DynamicFeeHook is BaseHook {
         totalFeesRouted += fee;
         emit FeeRouted(Currency.unwrap(feeCurrency), fee, totalSwaps);
 
-        return (BaseHook.afterSwap.selector, 0);
+        return (BaseHook.afterSwap.selector, int128(uint128(fee)));
     }
 
     function getSwapFeeInfo(uint256 amountIn)

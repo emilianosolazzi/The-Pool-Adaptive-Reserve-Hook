@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity >=0.8.24 <0.9.0;
 
 import {Test} from "forge-std/Test.sol";
 
@@ -37,7 +37,7 @@ contract DynamicFeeHookTest is Test {
         MockERC20 tB = new MockERC20("Token B", "TKB", 18);
         (token0, token1) = address(tA) < address(tB) ? (tA, tB) : (tB, tA);
 
-        uint160 flags = Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG;
+        uint160 flags = Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
             flags,

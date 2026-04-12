@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.30;
+pragma solidity >=0.8.24 <0.9.0;
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -53,7 +53,9 @@ contract FeeDistributor is Ownable, ReentrancyGuard {
         uint256 amount0 = isToken0 ? lpAmount : 0;
         uint256 amount1 = isToken0 ? 0 : lpAmount;
 
+        poolManager.sync(currency);
         currency.transfer(address(poolManager), lpAmount);
+        poolManager.settle();
         poolManager.donate(poolKey, amount0, amount1, "");
 
         totalToLPs += lpAmount;
