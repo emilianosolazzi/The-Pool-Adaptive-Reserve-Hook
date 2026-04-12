@@ -30,7 +30,7 @@ contract IntegrationTest is Test, Deployers {
     uint256 constant HOOK_FEE_BPS = 30;
     uint256 constant BPS_DENOM = 10_000;
     uint256 constant MAX_FEE = 0.02 ether;
-    uint256 constant TREASURY_SHARE = 33;
+    uint256 constant TREASURY_SHARE = 20;
 
     function setUp() public {
         treasury = makeAddr("treasury");

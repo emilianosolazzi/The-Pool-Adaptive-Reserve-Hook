@@ -50,9 +50,9 @@ contract FeeDistributorTest is Test {
         distributor.distribute(Currency.wrap(address(feeToken)), 1000);
     }
 
-    function test_split_33_67_precision() public {
+    function test_split_20_80_precision() public {
         uint256 amount = 100e6;
-        uint256 expectedTreasury = (amount * 33) / 100;
+        uint256 expectedTreasury = (amount * 20) / 100;
 
         Currency feeCurrency = poolKey.currency0;
         address tokenAddr = Currency.unwrap(feeCurrency);
@@ -130,6 +130,6 @@ contract FeeDistributorTest is Test {
 
         assertEq(distributor.distributionCount(), rounds);
         assertEq(distributor.totalDistributed(), amount * rounds);
-        assertEq(distributor.totalToTreasury(), ((amount * 33) / 100) * rounds);
+        assertEq(distributor.totalToTreasury(), ((amount * 20) / 100) * rounds);
     }
 }

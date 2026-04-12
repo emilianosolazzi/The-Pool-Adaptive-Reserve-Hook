@@ -12,8 +12,8 @@ contract FeeDistributor is Ownable, ReentrancyGuard {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
-    uint256 public constant TREASURY_SHARE = 33;
-    uint256 public constant LP_SHARE = 67;
+    uint256 public constant TREASURY_SHARE = 20;
+    uint256 public constant LP_SHARE = 80;
     uint256 public constant SHARE_DENOMINATOR = 100;
 
     IPoolManager public immutable poolManager;
