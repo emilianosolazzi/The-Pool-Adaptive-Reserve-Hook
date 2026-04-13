@@ -36,6 +36,8 @@ import {HookMiner} from "../test/utils/HookMiner.sol";
 ///      POOL_FEE            Uniswap v4 pool fee tier (uint24)       [default: 100 = 0.01%]
 ///      TICK_SPACING        Pool tick spacing (int24)               [default: 1]
 ///      SQRT_PRICE_X96      Initial pool price as Q64.96            [default: 1:1]
+///      OWNER               Multisig/timelock to receive ownership  [default: deployer keeps ownership]
+///                          Recipient must call acceptOwnership() on each contract to finalise.
 ///
 /// @dev Run on Arbitrum One:
 ///      forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify
@@ -60,15 +62,37 @@ contract Deploy is Script {
         uint24  poolFee     = uint24(vm.envOr("POOL_FEE",     uint256(100)));   // 0.01%
         int24   tickSpacing = int24(vm.envOr("TICK_SPACING",  int256(1)));
         uint160 sqrtPrice   = uint160(vm.envOr("SQRT_PRICE_X96", uint256(DEFAULT_SQRT_PRICE)));
+        // If set, ownership of all three contracts is transferred to this address after deploy.
+        // The recipient must call acceptOwnership() to complete the Ownable2Step handoff.
+        // Defaults to address(0) = no transfer (deployer retains ownership).
+        address owner       = vm.envOr("OWNER", address(0));
 
         IPoolManager     poolManager = IPoolManager(poolManagerAddr);
         IPositionManager posManager  = IPositionManager(posManagerAddr);
 
+        // ── Pre-compute hook salt before broadcast ────────────────────────────
+        // HookMiner performs off-chain brute-force iteration — must run outside
+        // vm.startBroadcast() so the loop does not pollute the broadcast trace.
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+        );
+        // distributor address is deterministic (nonce 0 of deployer), compute it
+        // so the hook constructor arg is known before any contract is deployed.
+        address deployerAddr = msg.sender;
+        address expectedDistributor = vm.computeCreateAddress(deployerAddr, vm.getNonce(deployerAddr));
+        (address hookAddr, bytes32 salt) = HookMiner.find(
+            deployerAddr,
+            flags,
+            type(DynamicFeeHook).creationCode,
+            abi.encode(address(poolManager), expectedDistributor)
+        );
+
         vm.startBroadcast();
 
         // ── 1. FeeDistributor ─────────────────────────────────────────────────
-        // Hook address is unknown yet; we resolve the circular dependency after mining.
+        // Hook address is unknown yet; we resolve the circular dependency in step 4.
         FeeDistributor distributor = new FeeDistributor(poolManager, treasury, address(0));
+        require(address(distributor) == expectedDistributor, "Distributor address mismatch -- nonce drift");
         console2.log("FeeDistributor deployed:", address(distributor));
 
         // ── 2. LiquidityVault (ERC-4626, token0 as underlying asset) ─────────
@@ -85,16 +109,6 @@ contract Deploy is Script {
         console2.log("LiquidityVault deployed:", address(vault));
 
         // ── 3. DynamicFeeHook (CREATE2 — address encodes hook permission flags) ─
-        uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-        );
-        (address hookAddr, bytes32 salt) = HookMiner.find(
-            msg.sender,
-            flags,
-            type(DynamicFeeHook).creationCode,
-            abi.encode(address(poolManager), address(distributor))
-        );
-
         DynamicFeeHook hook = new DynamicFeeHook{salt: salt}(poolManager, address(distributor));
         require(address(hook) == hookAddr, "Hook address mismatch -- salt stale");
 
@@ -120,6 +134,16 @@ contract Deploy is Script {
         distributor.setPoolKey(poolKey);
         vault.setPoolKey(poolKey);
 
+        // ── 7. Transfer ownership to multisig / timelock (optional) ──────────
+        // Ownable2Step: the new owner must call acceptOwnership() to finalise.
+        // Skip if OWNER env var was not set (deployer retains ownership).
+        if (owner != address(0)) {
+            distributor.transferOwnership(owner);
+            vault.transferOwnership(owner);
+            hook.transferOwnership(owner);
+            console2.log("Ownership transfer initiated to:", owner);
+        }
+
         vm.stopBroadcast();
 
         // ── Deployment summary ────────────────────────────────────────────────
@@ -132,5 +156,6 @@ contract Deploy is Script {
         console2.log("Perf Fee BPS    :", perfFeeBps);
         console2.log("Max TVL         :", maxTVL);
         console2.log("Max Fee BPS     :", maxFeeBps);
+        console2.log("Pending Owner   :", owner == address(0) ? deployerAddr : owner);
     }
 }
