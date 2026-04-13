@@ -89,7 +89,7 @@ forge test --no-match-contract "Invariant"
 forge test
 ```
 
-**73 tests — 0 failures** (unit, integration, fuzz 1 000 runs, stateful invariants 256 × depth 15).
+**76 tests — 0 failures** (unit, integration, fuzz 1 000 runs, stateful invariants 256 × depth 15).
 
 ### Deploy
 
