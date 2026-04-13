@@ -562,4 +562,36 @@ contract LiquidityVaultTest is Test {
     function test_treasury_initializedToDeployer() public view {
         assertEq(vault.treasury(), owner);
     }
+
+    /// setPoolKey must revert when the vault asset is not one of the pool's currencies.
+    function test_setPoolKey_assetNotInPool_reverts() public {
+        PoolKey memory badKey = PoolKey({
+            currency0: Currency.wrap(address(1)),
+            currency1: Currency.wrap(address(2)),
+            fee: 100,
+            tickSpacing: 1,
+            hooks: IHooks(address(vault))
+        });
+        vm.expectRevert("ASSET_NOT_IN_POOL");
+        vault.setPoolKey(badKey);
+    }
+
+    /// totalDepositors decrements when a depositor fully exits via redeem().
+    function test_totalDepositors_decrements_onFullWithdraw() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 10e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+
+        assertEq(vault.totalDepositors(), 1);
+
+        uint256 allShares = vault.balanceOf(alice);
+        vm.prank(alice);
+        vault.redeem(allShares, alice, alice);
+
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.totalDepositors(), 0);
+    }
 }

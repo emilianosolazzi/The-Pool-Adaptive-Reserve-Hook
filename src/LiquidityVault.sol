@@ -8,6 +8,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -21,6 +22,7 @@ import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 
 contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     using Math for uint256;
+    using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
 
@@ -41,6 +43,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public lastYieldUpdate;
     uint256 public positionTokenId;
     bool private _poolKeySet;
+    bool public assetIsToken0;        // true when vault asset == poolKey.currency0
 
     address public treasury;          // receives performance fees
     uint256 public performanceFeeBps; // fee on collected yield; 0 default, max 2000 (20%)
@@ -89,7 +92,9 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         _collectYield();
         uint256 proportion = assets.mulDiv(1e18, totalAssets());
         _removeLiquidity(proportion);
-        return super.withdraw(assets, receiver, owner);
+        uint256 shares_ = super.withdraw(assets, receiver, owner);
+        if (balanceOf(owner) == 0 && totalDepositors > 0) totalDepositors--;
+        return shares_;
     }
 
     function redeem(uint256 shares, address receiver, address owner) public override nonReentrant whenNotPaused returns (uint256) {
@@ -99,20 +104,24 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             uint256 proportion = assets.mulDiv(1e18, totalAssets());
             _removeLiquidity(proportion);
         }
-        return super.redeem(shares, receiver, owner);
+        uint256 returned = super.redeem(shares, receiver, owner);
+        if (balanceOf(owner) == 0 && totalDepositors > 0) totalDepositors--;
+        return returned;
     }
 
     function _deployLiquidity(uint256 amount) internal {
         if (!_poolKeySet || amount == 0) return;
 
-        uint160 sqrtPriceUpper = TickMath.getSqrtPriceAtTick(tickUpper);
         (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(poolKey.toId());
 
-        uint128 liquidity = LiquidityAmounts.getLiquidityForAmount0(
-            sqrtPriceX96,
-            sqrtPriceUpper,
-            amount
-        );
+        uint128 liquidity;
+        if (assetIsToken0) {
+            uint160 sqrtPriceUpper = TickMath.getSqrtPriceAtTick(tickUpper);
+            liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceX96, sqrtPriceUpper, amount);
+        } else {
+            uint160 sqrtPriceLower = TickMath.getSqrtPriceAtTick(tickLower);
+            liquidity = LiquidityAmounts.getLiquidityForAmount1(sqrtPriceLower, sqrtPriceX96, amount);
+        }
 
         if (positionTokenId == 0) {
             bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
@@ -163,7 +172,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         bytes[] memory params = new bytes[](3);
         params[0] = abi.encode(positionTokenId, liquidityToRemove, amount0Min, amount1Min, "");
         params[1] = abi.encode(poolKey.currency0, poolKey.currency1, address(this));
-        params[2] = abi.encode(poolKey.currency0, address(this));
+        params[2] = abi.encode(assetIsToken0 ? poolKey.currency0 : poolKey.currency1, address(this));
 
         uint256 balBefore = IERC20(asset()).balanceOf(address(this));
         positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
@@ -190,7 +199,6 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
         // Track non-asset currency yield only when the other token is a real contract.
         // Pools may use address(1) or similar sentinels for currency0 in tests/staging.
-        bool assetIsToken0 = Currency.unwrap(poolKey.currency0) == asset();
         address otherAddr = Currency.unwrap(assetIsToken0 ? poolKey.currency1 : poolKey.currency0);
         bool hasOtherToken = otherAddr.code.length > 0;
         uint256 otherBefore = hasOtherToken ? IERC20(otherAddr).balanceOf(address(this)) : 0;
@@ -215,7 +223,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             if (performanceFeeBps > 0 && treasury != address(0)) {
                 uint256 fee = yieldAmount * performanceFeeBps / 10_000;
                 if (fee > 0) {
-                    IERC20(asset()).transfer(treasury, fee);
+                    IERC20(asset()).safeTransfer(treasury, fee);
                     yieldAmount -= fee;
                     emit PerformanceFeePaid(treasury, fee);
                 }
@@ -232,7 +240,10 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
     function setPoolKey(PoolKey calldata _poolKey) external onlyOwner {
         require(!_poolKeySet, "ALREADY_SET");
+        bool _isToken0 = Currency.unwrap(_poolKey.currency0) == asset();
+        require(_isToken0 || Currency.unwrap(_poolKey.currency1) == asset(), "ASSET_NOT_IN_POOL");
         poolKey = _poolKey;
+        assetIsToken0 = _isToken0;
         _poolKeySet = true;
         emit PoolKeySet(PoolId.unwrap(_poolKey.toId()));
     }
@@ -256,7 +267,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         require(token != asset(), "CANNOT_RESCUE_ASSET");
         uint256 idle = IERC20(token).balanceOf(address(this));
         require(idle > 0, "NO_IDLE");
-        IERC20(token).transfer(owner(), idle);
+        IERC20(token).safeTransfer(owner(), idle);
     }
 
     function pause() external onlyOwner { _pause(); }
@@ -284,7 +295,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         depositors = totalDepositors;
         liqDeployed = assetsDeployed;
         yieldColl = totalYieldCollected;
-        feeDesc = "0.01% Base LP + 0.20% Yield Bonus via Hook";
+        feeDesc = "0.30% Hook Fee (20% Treasury / 80% LP Bonus) + Base Pool Fee";
     }
 
     function getProjectedAPY(uint256 recentYield, uint256 windowSeconds) external view returns (uint256 aprBps) {

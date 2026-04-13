@@ -34,6 +34,7 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
     event TreasuryUpdated(address indexed old, address indexed newTreasury);
 
     constructor(IPoolManager _poolManager, address _treasury, address _hook) Ownable(msg.sender) {
+        require(_treasury != address(0), "ZERO_ADDRESS");
         poolManager = _poolManager;
         treasury = _treasury;
         hook = _hook;
@@ -74,12 +75,14 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
     }
 
     function setHook(address _newHook) external onlyOwner {
+        require(_newHook != address(0), "ZERO_ADDRESS");
         address oldHook = hook;
         hook = _newHook;
         emit HookUpdated(oldHook, _newHook);
     }
 
     function setTreasury(address _newTreasury) external onlyOwner {
+        require(_newTreasury != address(0), "ZERO_ADDRESS");
         address oldTreasury = treasury;
         treasury = _newTreasury;
         emit TreasuryUpdated(oldTreasury, _newTreasury);

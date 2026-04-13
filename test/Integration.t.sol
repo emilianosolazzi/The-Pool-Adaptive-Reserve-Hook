@@ -157,13 +157,13 @@ contract IntegrationTest is Test, Deployers {
         uint256 amountIn = 1 ether;
         uint256 fee0 = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
 
-        // zeroForOne: fee on currency1
+        // zeroForOne: fee on currency1 (OUTPUT)
         uint256 t1Before = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
         swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
         uint256 t1Gained = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - t1Before;
         assertEq(t1Gained, (fee0 * TREASURY_SHARE) / 100);
 
-        // oneForZero: fee on currency0
+        // oneForZero: fee on currency0 (OUTPUT)
         uint256 t0Before = MockERC20(Currency.unwrap(currency0)).balanceOf(treasury);
         swap(poolKey, false, -int256(amountIn), ZERO_BYTES);
         uint256 t0Gained = MockERC20(Currency.unwrap(currency0)).balanceOf(treasury) - t0Before;
@@ -179,7 +179,7 @@ contract IntegrationTest is Test, Deployers {
         PoolId id = poolKey.toId();
         (, uint256 feeGrowth1Before) = manager.getFeeGrowthGlobals(id);
 
-        // zeroForOne → hook fee is on currency1 → feeGrowthGlobal1 must rise.
+        // zeroForOne -> hook fee is on currency1 (OUTPUT) -> feeGrowthGlobal1 must rise.
         swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
 
         (, uint256 feeGrowth1After) = manager.getFeeGrowthGlobals(id);

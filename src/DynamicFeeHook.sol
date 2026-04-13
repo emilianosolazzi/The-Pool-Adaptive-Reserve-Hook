@@ -155,9 +155,9 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         if (feeAmount > feeCap) feeAmount = feeCap;
 
         feeBps = HOOK_FEE_BPS;
-        treasuryBps = 10;
-        lpBonusBps = 20;
-        description = "0.01% Base LP + 0.30% Hook Fee (20% Treasury / 80% LP Bonus)";
+        treasuryBps = 6;   // 20% of 30 BPS
+        lpBonusBps = 24;   // 80% of 30 BPS
+        description = "0.30% Hook Fee: 6 BPS Treasury / 24 BPS LP Bonus via donate()";
     }
 
     function getStats() external view returns (uint256, uint256, address) {
@@ -165,12 +165,13 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     }
 
     function setMaxFeeBps(uint256 newBps) external onlyOwner {
-        require(newBps <= BPS_DENOMINATOR, "BPS_TOO_HIGH");
+        require(newBps <= 1000, "BPS_TOO_HIGH");
         emit MaxFeeBpsUpdated(maxFeeBps, newBps);
         maxFeeBps = newBps;
     }
 
     function setFeeDistributor(address newDistributor) external onlyOwner {
+        require(newDistributor != address(0), "ZERO_ADDRESS");
         emit DistributorUpdated(address(feeDistributor), newDistributor);
         feeDistributor = IFeeDistributor(newDistributor);
     }

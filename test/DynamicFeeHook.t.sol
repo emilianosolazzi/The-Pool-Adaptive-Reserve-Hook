@@ -171,10 +171,10 @@ contract DynamicFeeHookTest is Test {
         hook.setMaxFeeBps(10);
     }
 
-    /// setMaxFeeBps reverts if caller passes more than 10 000 BPS.
+    /// setMaxFeeBps reverts above the 1000 BPS (10%) protocol ceiling.
     function test_setMaxFeeBps_revertOnOverflow() public {
         vm.expectRevert("BPS_TOO_HIGH");
-        hook.setMaxFeeBps(10_001);
+        hook.setMaxFeeBps(1_001);
     }
 
     /// Owner can point the hook at a new distributor.
@@ -189,6 +189,12 @@ contract DynamicFeeHookTest is Test {
         vm.prank(makeAddr("rando"));
         vm.expectRevert();
         hook.setFeeDistributor(makeAddr("newDist"));
+    }
+
+    /// setFeeDistributor reverts on address(0).
+    function test_setFeeDistributor_zeroAddress_reverts() public {
+        vm.expectRevert("ZERO_ADDRESS");
+        hook.setFeeDistributor(address(0));
     }
 
     /// Ownable2Step: transferOwnership alone does not change the active owner;

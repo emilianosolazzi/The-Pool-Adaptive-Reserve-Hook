@@ -103,6 +103,11 @@ contract FeeDistributorTest is Test {
         assertEq(distributor.hook(), newHook);
     }
 
+    function test_setHook_zeroAddress_reverts() public {
+        vm.expectRevert("ZERO_ADDRESS");
+        distributor.setHook(address(0));
+    }
+
     function test_setTreasury_ownerOnly() public {
         address newTreasury = makeAddr("newTreasury");
 
@@ -112,6 +117,11 @@ contract FeeDistributorTest is Test {
 
         distributor.setTreasury(newTreasury);
         assertEq(distributor.treasury(), newTreasury);
+    }
+
+    function test_setTreasury_zeroAddress_reverts() public {
+        vm.expectRevert("ZERO_ADDRESS");
+        distributor.setTreasury(address(0));
     }
 
     function test_stats_accumulateAcrossDistributions() public {
