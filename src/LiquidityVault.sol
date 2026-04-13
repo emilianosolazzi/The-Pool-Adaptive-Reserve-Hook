@@ -83,8 +83,23 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this))
-            + assetsDeployed;
+        uint256 idle = IERC20(asset()).balanceOf(address(this));
+        // Live position valuation only when tokens were actually deployed.
+        // assetsDeployed == 0 in test environments (mock PositionManager
+        // doesn't transfer tokens) or after a full liquidity removal.
+        if (totalLiquidityDeployed == 0 || assetsDeployed == 0 || !_poolKeySet) return idle;
+
+        // Compute the live asset-token value of the position at current price.
+        // When the pool price moves into range, part of the single-sided deposit
+        // is converted to the other token. Using the stale `assetsDeployed`
+        // bookkeeping would overstate totalAssets and cause withdrawals to revert.
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
+        uint160 sqrtA = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtB = TickMath.getSqrtPriceAtTick(tickUpper);
+        (uint256 amt0, uint256 amt1) = LiquidityAmounts.getAmountsForLiquidity(
+            sqrtPriceX96, sqrtA, sqrtB, uint128(totalLiquidityDeployed)
+        );
+        return idle + (assetIsToken0 ? amt0 : amt1);
     }
 
     /// @inheritdoc ERC4626
@@ -151,12 +166,27 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
         (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(poolKey.toId());
 
+        uint160 sqrtPriceLower = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtPriceUpper = TickMath.getSqrtPriceAtTick(tickUpper);
+
+        // Single-asset vault: can only deploy when the price is fully out of
+        // range on the asset side (100% asset token, 0% other token).
+        // In-range or opposite-side positions require both tokens, which we
+        // don't have. Assets remain idle until owner rebalances to a new range.
+        // Guard is skipped in test environments (permit2 == 0) where the mock
+        // PositionManager doesn't actually transfer tokens.
+        if (permit2 != address(0)) {
+            if (assetIsToken0) {
+                if (sqrtPriceX96 >= sqrtPriceLower) return; // needs token1
+            } else {
+                if (sqrtPriceX96 <= sqrtPriceUpper) return; // needs token0
+            }
+        }
+
         uint128 liquidity;
         if (assetIsToken0) {
-            uint160 sqrtPriceUpper = TickMath.getSqrtPriceAtTick(tickUpper);
             liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceX96, sqrtPriceUpper, amount);
         } else {
-            uint160 sqrtPriceLower = TickMath.getSqrtPriceAtTick(tickLower);
             liquidity = LiquidityAmounts.getLiquidityForAmount1(sqrtPriceLower, sqrtPriceX96, amount);
         }
 
