@@ -594,4 +594,38 @@ contract LiquidityVaultTest is Test {
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.totalDepositors(), 0);
     }
+
+    /// maxDeposit returns 0 when the vault is paused.
+    function test_maxDeposit_returnsZeroWhenPaused() public {
+        vault.setPoolKey(poolKey);
+        vault.pause();
+        assertEq(vault.maxDeposit(alice), 0);
+    }
+
+    /// maxDeposit respects maxTVL: returns remaining headroom only.
+    function test_maxDeposit_respectsMaxTVL() public {
+        vault.setPoolKey(poolKey);
+        vault.setMaxTVL(50e6);
+
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(30e6, alice);
+        vm.stopPrank();
+
+        assertEq(vault.maxDeposit(alice), 20e6); // 50 - 30 = 20
+    }
+
+    /// maxWithdraw returns 0 when the vault is paused.
+    function test_maxWithdraw_returnsZeroWhenPaused() public {
+        vault.setPoolKey(poolKey);
+        usdc.mint(alice, 10e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+
+        vault.pause();
+        assertEq(vault.maxWithdraw(alice), 0);
+    }
 }

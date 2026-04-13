@@ -155,9 +155,9 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         if (feeAmount > feeCap) feeAmount = feeCap;
 
         feeBps = HOOK_FEE_BPS;
-        treasuryBps = 6;   // 20% of 30 BPS
-        lpBonusBps = 24;   // 80% of 30 BPS
-        description = "0.30% Hook Fee: 6 BPS Treasury / 24 BPS LP Bonus via donate()";
+        treasuryBps = 6;   // 20% of base 30 BPS; volatile regime (1.5x): 9 BPS
+        lpBonusBps = 24;   // 80% of base 30 BPS; volatile regime (1.5x): 36 BPS
+        description = "Base: 6 BPS treasury / 24 BPS LP; Volatile 1.5x: 9 BPS treasury / 36 BPS LP -- capped at maxFeeBps";
     }
 
     function getStats() external view returns (uint256, uint256, address) {

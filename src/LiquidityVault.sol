@@ -77,6 +77,33 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             + assetsDeployed;
     }
 
+    /// @inheritdoc ERC4626
+    function maxDeposit(address) public view override returns (uint256) {
+        if (paused() || !_poolKeySet) return 0;
+        if (maxTVL == 0) return type(uint256).max;
+        uint256 current = totalAssets();
+        return current >= maxTVL ? 0 : maxTVL - current;
+    }
+
+    /// @inheritdoc ERC4626
+    function maxMint(address receiver) public view override returns (uint256) {
+        uint256 maxAssets = maxDeposit(receiver);
+        if (maxAssets == type(uint256).max) return type(uint256).max;
+        return convertToShares(maxAssets);
+    }
+
+    /// @inheritdoc ERC4626
+    function maxWithdraw(address owner) public view override returns (uint256) {
+        if (paused()) return 0;
+        return convertToAssets(balanceOf(owner));
+    }
+
+    /// @inheritdoc ERC4626
+    function maxRedeem(address owner) public view override returns (uint256) {
+        if (paused()) return 0;
+        return balanceOf(owner);
+    }
+
     function deposit(uint256 assets, address receiver) public override nonReentrant whenNotPaused returns (uint256) {
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
