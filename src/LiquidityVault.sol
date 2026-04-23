@@ -399,7 +399,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         depositors = totalDepositors;
         liqDeployed = assetsDeployed;
         yieldColl = totalYieldCollected;
-        feeDesc = "0.30% Hook Fee (20% Treasury / 80% LP Bonus) + Base Pool Fee";
+        feeDesc = "0.25% Hook Fee (20% Treasury / 80% LP Bonus) + Base Pool Fee";
     }
 
     function getProjectedAPY(uint256 recentYield, uint256 windowSeconds) external view returns (uint256 aprBps) {

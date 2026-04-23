@@ -25,7 +25,7 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     using StateLibrary for IPoolManager;
 
     uint24 public constant LP_FEE = 100;
-    uint256 public constant HOOK_FEE_BPS = 30;
+    uint256 public constant HOOK_FEE_BPS = 25;
     uint256 public constant BPS_DENOMINATOR = 10_000;
     /// @dev Hard ceiling in BPS: hook fee can never exceed this fraction of amountIn.
     ///      Default 50 BPS (0.5%). Owner-adjustable. Currency-agnostic.
@@ -155,9 +155,9 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         if (feeAmount > feeCap) feeAmount = feeCap;
 
         feeBps = HOOK_FEE_BPS;
-        treasuryBps = 6;   // 20% of base 30 BPS; volatile regime (1.5x): 9 BPS
-        lpBonusBps = 24;   // 80% of base 30 BPS; volatile regime (1.5x): 36 BPS
-        description = "Base: 6 BPS treasury / 24 BPS LP; Volatile 1.5x: 9 BPS treasury / 36 BPS LP -- capped at maxFeeBps";
+        treasuryBps = 5;   // 20% of base 25 BPS
+        lpBonusBps = 20;   // 80% of base 25 BPS
+        description = "Base: 5 BPS treasury / 20 BPS LP; Volatile 1.5x: fee multiplied by 150% before 20/80 split -- capped at maxFeeBps";
     }
 
     /// @notice Returns the volatility oracle parameters that govern the 1.5x fee multiplier.

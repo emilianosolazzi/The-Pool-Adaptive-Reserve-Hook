@@ -58,21 +58,20 @@ contract DynamicFeeHookTest is Test {
     }
 
     function test_feeCalculation_smallSwap() public view {
-        // 1e18 * 30 / 10000 = 3e15; cap is 50 BPS of amountIn = 5e15 → base fee wins
+        // 1e18 * 25 / 10000 = 2.5e15; cap is 50 BPS of amountIn = 5e15 → base fee wins
         uint256 amountIn = 1e18;
         (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
-        assertEq(feeAmount, (amountIn * 30) / 10_000);
+        assertEq(feeAmount, (amountIn * 25) / 10_000);
     }
 
     function test_feeCalculation_cappedAtMax() public view {
-        // HOOK_FEE_BPS=30, maxFeeBps=50 → cap = 50 BPS, base = 30 BPS → base always wins
-        // Make amountIn huge so even 30 BPS > 50 BPS of a smaller reference — not possible
-        // Actually 30 < 50 so the fee is always the 30 BPS leg unless maxFeeBps < 30.
+        // HOOK_FEE_BPS=25, maxFeeBps=50 → cap = 50 BPS, base = 25 BPS → base always wins
+        // The cap only triggers when the base (or volatility-scaled) fee exceeds maxFeeBps.
         // Verify via an explicit lower cap set in the next test.
         uint256 amountIn = 1e22;
         (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
-        // 30 BPS of 1e22 = 3e19, cap = 50 BPS of 1e22 = 5e19 → base wins
-        assertEq(feeAmount, (amountIn * 30) / 10_000);
+        // 25 BPS of 1e22 = 2.5e19, cap = 50 BPS of 1e22 = 5e19 → base wins
+        assertEq(feeAmount, (amountIn * 25) / 10_000);
     }
 
     function test_beforeSwap_noFeeForMismatchedKey() public {
@@ -88,7 +87,7 @@ contract DynamicFeeHookTest is Test {
 
     function test_afterSwap_routesFeeToDistributor() public {
         uint256 amountIn = 1e18;
-        uint256 expectedFee = (amountIn * 30) / 10_000;
+        uint256 expectedFee = (amountIn * 25) / 10_000;
 
         SwapParams memory params = SwapParams({
             zeroForOne: true,
@@ -109,7 +108,7 @@ contract DynamicFeeHookTest is Test {
 
     function test_transientStorage_clearedAfterAfterSwap() public {
         uint256 amountIn = 1e18;
-        uint256 fee = (amountIn * 30) / 10_000;
+        uint256 fee = (amountIn * 25) / 10_000;
         BalanceDelta delta = toBalanceDelta(0, 0);
 
         SwapParams memory params = SwapParams({
@@ -129,7 +128,7 @@ contract DynamicFeeHookTest is Test {
 
     function test_stats_accumulateAcrossSwaps() public {
         uint256 amountIn = 1e18;
-        uint256 feePerSwap = (amountIn * 30) / 10_000;
+        uint256 feePerSwap = (amountIn * 25) / 10_000;
         uint256 swaps = 3;
 
         SwapParams memory params = SwapParams({
@@ -155,7 +154,7 @@ contract DynamicFeeHookTest is Test {
     /// Owner can lower the fee cap; getSwapFeeInfo and beforeSwap respect the new value.
     function test_setMaxFeeBps_updatesAndEnforces() public {
         // Lower the cap below HOOK_FEE_BPS so the cap triggers
-        uint256 newCapBps = 20; // 20 BPS < 30 BPS base fee
+        uint256 newCapBps = 20; // 20 BPS < 25 BPS base fee
         hook.setMaxFeeBps(newCapBps);
         assertEq(hook.maxFeeBps(), newCapBps);
 
