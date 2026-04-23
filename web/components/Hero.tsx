@@ -6,34 +6,33 @@ export function Hero({ pairSymbol }: { pairSymbol: string }) {
         <div className="mb-6 flex flex-wrap gap-2">
           <span className="chip">
             <span className="h-1.5 w-1.5 rounded-full bg-accent-400 shadow-[0_0_10px_rgba(255,92,184,0.8)]" />
-            Fee-only yield
+            Early-depositor bonus live
           </span>
-          <span className="chip">25 bps dynamic hook fee</span>
-          <span className="chip">1.5× volatility multiplier</span>
-          <span className="chip">80% back to LPs</span>
+          <span className="chip">First $100K TVL</span>
+          <span className="chip">6 months</span>
+          <span className="chip">Paid in USDC</span>
         </div>
         <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white md:text-6xl">
-          Auto-compounding LP yield on{' '}
-          <span className="gradient-text">Uniswap&nbsp;v4.</span>
+          Earn LP fees{' '}
+          <span className="gradient-text">+ a 6-month early-depositor bonus.</span>
         </h1>
         <p className="mt-5 max-w-2xl text-balance text-lg text-zinc-300/90">
-          The Pool attaches a programmable fee layer to any v4 concentrated-liquidity
-          pool. 20% of every swap fee funds the treasury; 80% is donated back to
-          the pool on the same transaction. Share price appreciates automatically —
-          no claims, no staking, no emissions.
+          First $100K TVL shares <strong className="text-white">50% of treasury swap fees</strong> for
+          6 months — time-weighted, capped, paid monthly in USDC. On top of the normal LP fee share,
+          not instead of it. No new token, no vesting, no emissions.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          <a href="#vault" className="btn-primary">Open the vault</a>
+          <a href="#vault" className="btn-primary">Deposit USDC</a>
           <a
-            href="https://github.com/emilianosolazzi/The-Pool/blob/main/docs/ARCHITECTURE.md"
+            href="https://github.com/emilianosolazzi/The-Pool/blob/main/docs/BOOTSTRAP.md"
             target="_blank"
             rel="noopener noreferrer"
             className="btn-ghost"
           >
-            Read the architecture
+            Read the bootstrap spec
           </a>
           <span className="ml-1 text-sm text-zinc-400">
-            Reference deployment:{' '}
+            Eligibility starts after 7 days ·{' '}
             <span className="font-mono text-zinc-200">{pairSymbol}</span> · Arbitrum&nbsp;One
           </span>
         </div>
