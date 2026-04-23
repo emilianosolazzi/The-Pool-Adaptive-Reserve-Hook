@@ -87,17 +87,15 @@ Worst-case treasury spend (before per-epoch caps):
 
 ## 5. Implementation sketch
 
-Standalone contract [src/BootstrapRewards.sol](../src/BootstrapRewards.sol):
+Public summary:
 
-- Becomes the FeeDistributor's treasury for the program window via `setTreasury(bootstrapRewards)` ([src/FeeDistributor.sol](../src/FeeDistributor.sol#L84)). After the program: `setTreasury(realTreasury)`.
-- `pullInflow()` (permissionless, idempotent) splits any new payout-asset balance: `bonusShareBps` (5000 = 50%) into the active epoch's `bonusPool` (capped by `perEpochCap`), the rest forwarded to `realTreasury`. Overflow above the cap also forwards to `realTreasury`.
-- `poke(user)` (permissionless) accrues share-seconds for `user` over `[lastPoke, min(now, programEnd)]` using the user's balance at lastPoke, clipped to `perWalletShareCap`, with a `dwellPeriod` (7-day) gate.
-- **Finalization window**: after epochEnd, claims are locked for `finalizationDelay` (7 days). During this window, anyone can `poke` any depositor so totalShareSeconds converges to its true value. This eliminates the order-dependent claim race that would otherwise let the first claimer drain the pool.
-- `claim(epoch)` (pull-style) opens at `epochEnd + finalizationDelay`, valid for `claimWindow` (90 days). Auto-pokes the caller before computing payout = `bonusPool * userSS / totalSS`.
-- `sweepEpoch(epoch)` (permissionless, after claim window) returns unclaimed dust to `realTreasury`.
-- `sweepToken(token)` (owner) forwards any non-payout token (e.g. WETH inflows when the swap currency was currency0) to `realTreasury`. Cannot sweep the payout asset.
+- A fixed share of treasury fees is routed to the early-depositor bonus program for 180 days.
+- Rewards are time-weighted by deposit size and time in the vault, with clear per-wallet and per-epoch caps.
+- Bonus payouts are made in USDC on monthly epochs during a defined claim window.
+- Any unclaimed monthly bonus is returned to treasury after the claim window closes.
+- This program is additive to normal LP fee earnings and does not change base hook/vault economics.
 
-No changes required to `DynamicFeeHook`, `FeeDistributor`, or `LiquidityVault` — the whole program is implemented in one external contract plus a treasury-address swap.
+Technical implementation details are intentionally omitted from this public document.
 
 ---
 
