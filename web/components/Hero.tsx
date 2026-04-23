@@ -18,11 +18,10 @@ export function Hero({ pairSymbol }: { pairSymbol: string }) {
         </h1>
         <p className="mt-5 max-w-2xl text-balance text-lg text-zinc-300/90">
           First $100K TVL shares <strong className="text-white">50% of treasury swap fees</strong> for
-          6 months — time-weighted, capped, paid monthly in USDC. On top of the normal LP fee share,
-          not instead of it. No new token, no vesting, no emissions.
+          6 months. Time-weighted, capped, paid in USDC.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          <a href="#vault" className="btn-primary">Deposit USDC</a>
+          <a href="#vault" className="btn-primary">Deposit USDC — eligibility starts after 7 days</a>
           <a
             href="https://github.com/emilianosolazzi/The-Pool/blob/main/docs/BOOTSTRAP.md"
             target="_blank"
@@ -32,10 +31,14 @@ export function Hero({ pairSymbol }: { pairSymbol: string }) {
             Read the bootstrap spec
           </a>
           <span className="ml-1 text-sm text-zinc-400">
-            Eligibility starts after 7 days ·{' '}
             <span className="font-mono text-zinc-200">{pairSymbol}</span> · Arbitrum&nbsp;One
           </span>
         </div>
+        <p className="mt-6 max-w-3xl text-xs leading-relaxed text-zinc-500">
+          Bonus is share-seconds-weighted, capped at $25K per wallet and $10K per monthly epoch.
+          Transfers of vault shares forfeit unclaimed bonus. Program ends after 180 days or when
+          the $100K TVL window closes. Not investment advice.
+        </p>
       </div>
     </section>
   );
