@@ -29,8 +29,16 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
     uint256 public constant MIN_DEPOSIT = 1e6;
 
-    int24 public tickLower = -230270;
-    int24 public tickUpper = -69082;
+    // Default range for USDC-deposit vault on WETH/USDC (Arbitrum One).
+    // WETH = currency0, USDC = currency1 (by address sort), so vault asset is token1.
+    // Single-sided token1 requires currentTick > tickUpper; as ETH drops below
+    // the range, the vault slowly converts USDC -> WETH while earning fees.
+    //   tickUpper = -201360 ~ 1 WETH ~= 1,800 USDC
+    //   tickLower = -210780 ~ 1 WETH ~=   700 USDC
+    // Both values are multiples of 10 and 60 so they align with common v4 tick
+    // spacings (fee tiers 500 / 3000). Owner may call rebalance() at any time.
+    int24 public tickLower = -210780;
+    int24 public tickUpper = -201360;
 
     IPoolManager public immutable poolManager;
     IPositionManager public immutable positionManager;
@@ -100,6 +108,24 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             sqrtPriceX96, sqrtA, sqrtB, uint128(totalLiquidityDeployed)
         );
         return idle + (assetIsToken0 ? amt0 : amt1);
+    }
+
+    /// @notice ERC-4626 inflation-attack mitigation.
+    /// @dev    Multiplies OpenZeppelin's default virtual-shares/assets offset
+    ///         (`+1`) by 10**6. This raises the attacker's required donation
+    ///         to successfully round a victim's shares to zero by the same
+    ///         factor, rendering the "first-depositor donation attack"
+    ///         economically infeasible regardless of the asset's decimals
+    ///         (so MIN_DEPOSIT=1e6 remains safe even when deployed against an
+    ///         18-decimal asset).
+    ///
+    ///         Semantic impact: the share-to-asset ratio at the initial
+    ///         deposit is 10**6 : 1, not 1 : 1. ERC-4626 convertToAssets /
+    ///         convertToShares accounting remains internally consistent;
+    ///         depositors should use those helpers (not raw share counts)
+    ///         when computing entitlements.
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
     }
 
     /// @inheritdoc ERC4626
@@ -395,7 +421,18 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
     function getVaultStats() external view returns (uint256 tvl, uint256 sharePrice, uint256 depositors, uint256 liqDeployed, uint256 yieldColl, string memory feeDesc) {
         tvl = totalAssets();
-        sharePrice = totalSupply() == 0 ? 1e18 : tvl.mulDiv(1e18, totalSupply());
+        // Share price is reported as asset-per-share normalized to 1e18 so that
+        // it starts at exactly 1e18 regardless of the `_decimalsOffset()` we use
+        // for inflation-attack mitigation. Using convertToAssets() with a full
+        // share unit (10**decimals()) and scaling by the asset's own decimals
+        // keeps the public semantics stable: 1e18 = "no yield", >1e18 = accrued.
+        if (totalSupply() == 0) {
+            sharePrice = 1e18;
+        } else {
+            uint256 oneShareUnit = 10 ** uint256(decimals());
+            uint256 oneAssetUnit = 10 ** (uint256(decimals()) - uint256(_decimalsOffset()));
+            sharePrice = convertToAssets(oneShareUnit).mulDiv(1e18, oneAssetUnit);
+        }
         depositors = totalDepositors;
         liqDeployed = assetsDeployed;
         yieldColl = totalYieldCollected;

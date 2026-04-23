@@ -107,7 +107,14 @@ POS_MANAGER=         # Uniswap v4 PositionManager address
 TOKEN0=              # Lower-address token of the pair
 TOKEN1=              # Higher-address token of the pair
 TREASURY=            # Address that receives the 20% protocol fee
+
+# Optional — pick the vault's deposit asset (defaults to TOKEN0)
+ASSET_TOKEN=         # Must equal TOKEN0 or TOKEN1
 ```
+
+#### Reference deployment — USDC / WETH on Arbitrum One
+
+The vault is **single-sided out-of-range** by design: it holds one asset and earns fees while waiting to convert into the other across a configured tick band. For a USDC-deposit vault on the Arbitrum USDC / WETH pair, WETH (`0x82aF…`) sorts below USDC (`0xaf88…`), so `TOKEN0=WETH`, `TOKEN1=USDC`, and `ASSET_TOKEN=TOKEN1`. Default ticks in [`LiquidityVault`](src/LiquidityVault.sol) target the ≈ \$700 – \$1,800 WETH/USDC corridor so the vault activates on real drawdowns; the owner can `rebalance()` any time. A ready-to-edit preset lives in [`.env.example`](.env.example).
 
 Optional parameters with their defaults:
 

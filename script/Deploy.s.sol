@@ -31,6 +31,10 @@ import {HookMiner} from "../test/utils/HookMiner.sol";
 ///
 /// @dev Optional env vars (have safe defaults):
 ///
+///      ASSET_TOKEN         Which side of the pool is the vault underlying
+///                          [default: TOKEN0]. Must equal TOKEN0 or TOKEN1.
+///                          e.g. on Arbitrum WETH/USDC, WETH sorts below USDC,
+///                          so set ASSET_TOKEN=TOKEN1 (USDC) for a USDC-deposit vault.
 ///      PERFORMANCE_FEE_BPS Vault performance fee in basis points  [default: 500 = 5%]
 ///      MAX_TVL             Vault deposit ceiling in asset-token units [default: 0 = unlimited]
 ///      MAX_FEE_BPS         Hook swap fee ceiling in basis points   [default: 50 = 0.5%]
@@ -66,6 +70,14 @@ contract Deploy is Script {
         uint24  poolFee     = uint24(vm.envOr("POOL_FEE",     uint256(100)));   // 0.01%
         int24   tickSpacing = int24(vm.envOr("TICK_SPACING",  int256(1)));
         uint160 sqrtPrice   = uint160(vm.envOr("SQRT_PRICE_X96", uint256(DEFAULT_SQRT_PRICE)));
+        // Choose which side of the pool is the vault underlying asset. Defaults to
+        // currency0. Set to TOKEN1 when the desired deposit token sorts higher
+        // (e.g. USDC on a WETH/USDC Arbitrum pool).
+        address assetTokenAddr = vm.envOr("ASSET_TOKEN", token0Addr);
+        require(
+            assetTokenAddr == token0Addr || assetTokenAddr == token1Addr,
+            "ASSET_TOKEN must equal TOKEN0 or TOKEN1"
+        );
         // If set, a TimelockController is deployed with OWNER as proposer and ownership
         // of all three contracts is transferred to it. Set to address(0) to skip (deployer keeps ownership).
         address owner          = vm.envOr("OWNER", address(0));
@@ -105,13 +117,13 @@ contract Deploy is Script {
         require(address(distributor) == expectedDistributor, "Distributor address mismatch -- nonce drift");
         console2.log("FeeDistributor deployed:", address(distributor));
 
-        // ── 2. LiquidityVault (ERC-4626, token0 as underlying asset) ─────────
-        // NOTE: The vault is always single-sided on token0. If your target pool
-        // uses token1 as the deposit asset (e.g. WETH in a USDC/WETH pool where
-        // WETH > USDC numerically), swap TOKEN0 and TOKEN1 in your .env so that
-        // the desired asset sorts lower. Uniswap v4 requires currency0 < currency1.
+        // ── 2. LiquidityVault (ERC-4626, single-sided on ASSET_TOKEN) ────────
+        // The vault accepts deposits of ASSET_TOKEN only. It deploys liquidity
+        // as a single-sided out-of-range position on whichever side of the pool
+        // ASSET_TOKEN sits on (token0 or token1). Owner calls rebalance() to
+        // reposition ticks when market conditions change.
         LiquidityVault vault = new LiquidityVault(
-            IERC20(token0Addr),
+            IERC20(assetTokenAddr),
             poolManager,
             posManager,
             "DeFi Hook LP Vault",

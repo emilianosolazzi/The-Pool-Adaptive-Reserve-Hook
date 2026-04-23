@@ -157,8 +157,11 @@ contract LiquidityVaultTest is Test {
 
     // ── ERC-4626 Performance Tests ───────────────────────────────────────────
 
-    /// First depositor receives exactly 1 share per asset (no virtual offset inflation).
-    function test_4626_initialDeposit_oneToOne() public {
+    /// First depositor's share of the vault is proportional to their deposit.
+    /// With _decimalsOffset() = 6 (inflation-attack mitigation), raw shares are
+    /// scaled by 10**6 vs the 1:1 default, so we assert via convertToAssets
+    /// which is offset-invariant.
+    function test_4626_initialDeposit_sharesMatchAssets() public {
         vault.setPoolKey(poolKey);
         usdc.mint(alice, 100e6);
 
@@ -167,7 +170,8 @@ contract LiquidityVaultTest is Test {
         uint256 shares = vault.deposit(100e6, alice);
         vm.stopPrank();
 
-        assertEq(shares, 100e6);
+        assertGt(shares, 0);
+        assertEq(vault.convertToAssets(shares), 100e6);
         assertEq(vault.totalAssets(), 100e6);
     }
 
@@ -284,9 +288,12 @@ contract LiquidityVaultTest is Test {
 
         uint256 sharesAfter = vault.convertToShares(100e6);
 
-        // 100 USDC buys half as many shares now that TVL doubled
+        // 100 USDC buys half as many shares now that TVL doubled.
+        // Absolute tolerance widened from 2 to 1e6 to accommodate the larger
+        // raw share counts under _decimalsOffset() = 6 (relative error stays
+        // at ~1e-8, i.e. still essentially exact).
         assertLt(sharesAfter, sharesBefore);
-        assertApproxEqAbs(sharesAfter, sharesBefore / 2, 2);
+        assertApproxEqAbs(sharesAfter, sharesBefore / 2, 1e6);
     }
 
     /// getProjectedAPY returns correct basis-points for a known yield/tvl/window.
