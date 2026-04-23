@@ -44,7 +44,7 @@ Extends `BaseHook` and `Ownable2Step`. Activates `beforeSwap`, `afterSwap`, and 
 
 **Fee computation (beforeSwap)**
 
-1. Base fee: `amountIn × 30 BPS` (constant `HOOK_FEE_BPS = 30`).
+1. Base fee: `amountIn × 25 BPS` (constant `HOOK_FEE_BPS = 25`).
 2. Volatility multiplier: reads current `sqrtPriceX96` via `StateLibrary.getSlot0()`. If it moved ≥ 1 % from `lastSqrtPriceX96`, the fee is scaled by **1.5×** (`VOLATILITY_FEE_MULTIPLIER = 150`).
 3. Cap: fee is clamped to `amountIn × maxFeeBps / 10_000` (owner-adjustable, default 50 BPS = 0.5%, hard max 1000 BPS via `setMaxFeeBps`).
 4. Fee currency: `currency1` for `zeroForOne` swaps, `currency0` for `!zeroForOne` (fee taken from the output token side).
@@ -68,7 +68,7 @@ Extends `BaseHook` and `Ownable2Step`. Activates `beforeSwap`, `afterSwap`, and 
 | Variable | Type | Default | Notes |
 |---|---|---|---|
 | `LP_FEE` | `uint24` | 100 | Pool's base LP fee (0.01%) |
-| `HOOK_FEE_BPS` | `uint256` | 30 | Hook's base fee rate (0.30%) |
+| `HOOK_FEE_BPS` | `uint256` | 25 | Hook's base fee rate (0.25%) |
 | `maxFeeBps` | `uint256` | 50 | Owner-adjustable cap in BPS (max 1000 = 10%) |
 | `lastSqrtPriceX96` | `uint160` | 0 | Inter-swap price tracker; 0 = first swap skips volatility check |
 | `lastSwapBlock` | `uint256` | 0 | Block of last price-reference update |
@@ -273,7 +273,7 @@ rebalance(newTickLower, newTickUpper) [onlyOwner, nonReentrant]
 ```
 1. Swapper calls PoolManager.swap() (via unlock callback pattern)
 2. PoolManager calls DynamicFeeHook.beforeSwap()
-   → fee = amountIn × 30 BPS (×1.5 if volatile), capped at maxFeeBps
+   → fee = amountIn × 25 BPS (×1.5 if volatile), capped at maxFeeBps
    → fee amount + currency stored in transient storage (TSTORE)
    → totalSwaps incremented
 3. Swap executes inside PoolManager (modifies pool state)

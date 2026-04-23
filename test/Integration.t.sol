@@ -27,7 +27,7 @@ contract IntegrationTest is Test, Deployers {
     PoolKey public poolKey;
     address public treasury;
 
-    uint256 constant HOOK_FEE_BPS = 30;
+    uint256 constant HOOK_FEE_BPS = 25;
     uint256 constant BPS_DENOM = 10_000;
     uint256 constant MAX_FEE_BPS = 50;  // 0.5% of amountIn — matches hook.maxFeeBps default
     uint256 constant TREASURY_SHARE = 20;
@@ -104,11 +104,11 @@ contract IntegrationTest is Test, Deployers {
 
     function test_feeCap_largeSwap() public {
         uint256 amountIn = 100 ether;
-        uint256 uncappedFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM; // 30 BPS of 100 ETH
+        uint256 uncappedFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM; // 25 BPS of 100 ETH
         uint256 cappedFee   = (amountIn * MAX_FEE_BPS)  / BPS_DENOM; // 50 BPS of 100 ETH
-        // 30 BPS < 50 BPS cap → fee is NOT capped; cap only triggers when base > MAX_FEE_BPS.
+        // 25 BPS < 50 BPS cap → fee is NOT capped; cap only triggers when base > MAX_FEE_BPS.
         // Lower the cap for this test so the cap triggers.
-        hook.setMaxFeeBps(20); // 20 BPS cap < 30 BPS base
+        hook.setMaxFeeBps(20); // 20 BPS cap < 25 BPS base
         uint256 expectedFee = (amountIn * 20) / BPS_DENOM;
         assertTrue(uncappedFee > expectedFee, "precondition: base fee exceeds 20bps cap");
 
@@ -198,10 +198,10 @@ contract IntegrationTest is Test, Deployers {
         assertTrue(addr & Hooks.AFTER_DONATE_FLAG == 0, "unexpected AFTER_DONATE");
     }
 
-    // ── Swap with zero fee (tiny amount below 30 bps resolution) ─────────────
+    // ── Swap with zero fee (tiny amount below 25 bps resolution) ─────────────
 
     function test_zeroFee_swapSucceeds() public {
-        // amountIn = 3 → fee = (3 * 30) / 10000 = 0 (integer truncation)
+        // amountIn = 3 → fee = (3 * 25) / 10000 = 0 (integer truncation)
         swap(poolKey, true, -int256(3), ZERO_BYTES);
 
         assertEq(hook.totalSwaps(), 1);

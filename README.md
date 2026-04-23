@@ -4,6 +4,8 @@
 
 The Pool attaches a programmable fee layer to any Uniswap v4 concentrated-liquidity pool. Swap fees are captured on-chain, split between the protocol treasury and LP fee growth, and auto-compounded into an ERC-4626 vault position — so liquidity providers earn more without changing their workflow.
 
+> Fee-only, auto-compounding LP yield on Uniswap v4. No token, no emissions, no lockups. 25 bps dynamic fee on every swap, scaled 1.5× in volatile blocks, 80% donated directly back to the pool on the same transaction. Share price appreciates automatically — no claim flow, no staking. Owner-adjustable range with zero accounting impact on depositors.
+
 ---
 
 ## Architecture
@@ -26,7 +28,7 @@ Swapper ──► Uniswap v4 PoolManager
                     v4-periphery PositionManager
 ```
 
-Each swap triggers a 30 BPS hook fee. During periods of elevated volatility — defined as a ≥ 1% price move since the last block — the fee scales to **1.5×**. The total fee is routed through `FeeDistributor`: 20% goes to the treasury, 80% is donated back to the pool via `poolManager.donate()`, flowing directly into LP fee growth. LPs who deposit into the vault have their position auto-compounded on every withdrawal and rebalance.
+Each swap triggers a 25 BPS hook fee. During periods of elevated volatility — defined as a ≥ 1% price move since the last block — the fee scales to **1.5×**. The total fee is routed through `FeeDistributor`: 20% goes to the treasury, 80% is donated back to the pool via `poolManager.donate()`, flowing directly into LP fee growth. LPs who deposit into the vault have their position auto-compounded on every withdrawal and rebalance.
 
 ---
 
@@ -51,7 +53,7 @@ For a full description of state machines, data flows, and invariants, see [`docs
 - **Tick rebalancing** — the owner can shift the concentrated-liquidity range without disrupting depositor balances or share price
 
 **For the protocol**
-- **Dynamic fee capture** — 30 BPS base fee, rising to 45 BPS in volatile conditions; revenue scales with market activity
+- **Dynamic fee capture** — 25 BPS base fee, scaling 1.5× in volatile conditions; revenue scales with market activity
 - **Performance fee** — owner-configurable treasury cut on harvested yield (0 – 20%, default 0)
 - **TVL cap** — optional ceiling on total deposits to manage controlled rollout
 
