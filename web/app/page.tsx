@@ -1,6 +1,7 @@
 'use client';
 
 import { useChainId } from 'wagmi';
+import { arbitrum, arbitrumSepolia } from 'wagmi/chains';
 import { Nav } from '@/components/Nav';
 import { Hero } from '@/components/Hero';
 import { PlainEnglish } from '@/components/PlainEnglish';
@@ -12,7 +13,10 @@ import { DEFAULT_CHAIN_ID, getDeployment, type AppChainId } from '@/lib/deployme
 
 export default function HomePage() {
   const chainId = useChainId();
-  const activeChainId = (chainId as AppChainId) ?? DEFAULT_CHAIN_ID;
+  const activeChainId: AppChainId =
+    chainId === arbitrum.id || chainId === arbitrumSepolia.id
+      ? chainId
+      : DEFAULT_CHAIN_ID;
   const deployment = getDeployment(activeChainId);
 
   return (
@@ -43,7 +47,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <HowItWorks deployment={deployment} />
+        <HowItWorks deployment={deployment} chainId={activeChainId} />
       </main>
       <Footer />
     </>

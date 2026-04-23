@@ -8,6 +8,7 @@ import {
   useWaitForTransactionReceipt,
   useWriteContract,
 } from 'wagmi';
+import { arbitrumSepolia } from 'wagmi/chains';
 import { erc20Abi, vaultAbi } from '@/lib/abis';
 import { fmtUnits } from '@/lib/format';
 import { type Deployment } from '@/lib/deployments';
@@ -24,6 +25,8 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
   const asset = deployment.asset as Address | undefined;
   const dec = deployment.assetDecimals;
   const ready = Boolean(vault && asset);
+  const txExplorerBase =
+    chainId === arbitrumSepolia.id ? 'https://sepolia.arbiscan.io' : 'https://arbiscan.io';
 
   const { data: wallet, refetch: refetchWallet } = useReadContracts({
     contracts:
@@ -42,6 +45,16 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
   const allowance = wallet?.[1]?.result as bigint | undefined;
   const shares = wallet?.[2]?.result as bigint | undefined;
 
+  const { data: rawShareDecimals } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'decimals',
+    chainId,
+    query: { enabled: Boolean(vault), refetchInterval: 60_000 },
+  });
+
+  const shareDecimals = rawShareDecimals as number | undefined;
+
   const { data: redeemablePreview } = useReadContract({
     address: vault,
     abi: vaultAbi,
@@ -54,11 +67,15 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
   const parsed = useMemo(() => {
     if (!amount) return 0n;
     try {
-      return parseUnits(amount, tab === 'deposit' ? dec : 18);
+      if (tab === 'withdraw') {
+        if (shareDecimals === undefined) return 0n;
+        return parseUnits(amount, shareDecimals);
+      }
+      return parseUnits(amount, dec);
     } catch {
       return 0n;
     }
-  }, [amount, dec, tab]);
+  }, [amount, dec, shareDecimals, tab]);
 
   const needsApproval =
     tab === 'deposit' && parsed > 0n && (allowance ?? 0n) < parsed;
@@ -107,8 +124,8 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
   const onMax = () => {
     if (tab === 'deposit' && assetBalance !== undefined) {
       setAmount(fmtUnits(assetBalance, dec, dec));
-    } else if (tab === 'withdraw' && shares !== undefined) {
-      setAmount(fmtUnits(shares, 18, 18));
+    } else if (tab === 'withdraw' && shares !== undefined && shareDecimals !== undefined) {
+      setAmount(fmtUnits(shares, shareDecimals, shareDecimals));
     }
   };
 
@@ -118,6 +135,7 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
     parsed <= 0n ||
     isPending ||
     isMining ||
+    (tab === 'withdraw' && shareDecimals === undefined) ||
     (tab === 'deposit' && assetBalance !== undefined && parsed > assetBalance) ||
     (tab === 'withdraw' && shares !== undefined && parsed > shares);
 
@@ -165,7 +183,7 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
             <span>
               {tab === 'deposit'
                 ? `Balance: ${fmtUnits(assetBalance, dec, 4)} ${deployment.assetSymbol}`
-                : `Shares: ${fmtUnits(shares, 18, 6)}`}
+                : `Shares: ${shareDecimals === undefined ? '—' : fmtUnits(shares, shareDecimals, 6)}`}
             </span>
           </div>
 
@@ -214,7 +232,7 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
 
           {txHash && (
             <a
-              href={`https://arbiscan.io/tx/${txHash}`}
+              href={`${txExplorerBase}/tx/${txHash}`}
               target="_blank"
               rel="noopener noreferrer"
               className="block text-center text-xs text-accent-400 hover:underline"

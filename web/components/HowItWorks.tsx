@@ -1,5 +1,6 @@
 import { shortAddress } from '@/lib/format';
 import type { Deployment } from '@/lib/deployments';
+import { arbitrumSepolia } from 'wagmi/chains';
 
 const steps = [
   {
@@ -24,13 +25,16 @@ const steps = [
   },
 ];
 
-export function HowItWorks({ deployment }: { deployment: Deployment }) {
+export function HowItWorks({ deployment, chainId }: { deployment: Deployment; chainId: number }) {
+  const isSepolia = chainId === arbitrumSepolia.id;
+  const explorerBase = isSepolia ? 'https://sepolia.arbiscan.io' : 'https://arbiscan.io';
+
   const addrRow = (label: string, a?: string) => (
     <div className="flex items-center justify-between border-b border-white/5 px-4 py-3 text-sm last:border-0">
       <span className="text-zinc-400">{label}</span>
       {a ? (
         <a
-          href={`https://arbiscan.io/address/${a}`}
+          href={`${explorerBase}/address/${a}`}
           target="_blank"
           rel="noopener noreferrer"
           className="font-mono text-accent-400 hover:underline"
@@ -66,7 +70,7 @@ export function HowItWorks({ deployment }: { deployment: Deployment }) {
       <div className="mt-10 grid gap-6 md:grid-cols-2">
         <div className="card">
           <div className="border-b border-white/5 px-4 py-3 text-xs uppercase tracking-widest text-zinc-500">
-            Contracts · Arbitrum One
+            Contracts · {isSepolia ? 'Arbitrum Sepolia' : 'Arbitrum One'}
           </div>
           {addrRow('LiquidityVault', deployment.vault)}
           {addrRow('DynamicFeeHook', deployment.hook)}

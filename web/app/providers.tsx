@@ -5,7 +5,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WagmiProvider } from 'wagmi';
 import { arbitrum, arbitrumSepolia } from 'wagmi/chains';
 
-const projectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID ?? 'the-pool-demo';
+const projectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
+
+if (!projectId) {
+  throw new Error('NEXT_PUBLIC_WC_PROJECT_ID is required');
+}
 
 export const wagmiConfig = getDefaultConfig({
   appName: 'The Pool',
