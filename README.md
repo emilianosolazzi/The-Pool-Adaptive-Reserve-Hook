@@ -91,7 +91,7 @@ forge test --no-match-contract "Invariant"
 forge test
 ```
 
-**79 tests — 0 failures** (unit, integration, fuzz 1 000 runs, stateful invariants 256 × depth 15).
+**105 tests — 0 failures** (unit, integration, fuzz 1 000 runs, stateful invariants 256 × depth 15).
 
 ### Deploy
 
@@ -164,10 +164,10 @@ All critical paths have been reviewed with emphasis on correctness, arithmetic p
 
 | Category | Count | Configuration |
 |---|---|---|
-| Unit tests | 67 | — |
+| Unit tests | 93 | — |
 | Integration tests | 8 | Real v4 PoolManager |
 | Stateful invariants | 4 | 256 runs × depth 15 |
-| **Total** | **79** | **0 failures** |
+| **Total** | **105** | **0 failures** |
 
 ### External Audit
 

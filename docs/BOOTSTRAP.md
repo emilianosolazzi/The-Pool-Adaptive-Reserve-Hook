@@ -1,6 +1,6 @@
 # The Pool — Early Depositor Bootstrap Program
 
-One-page spec. Status: proposal, not yet implemented on-chain.
+One-page spec. Status: implemented at [src/BootstrapRewards.sol](../src/BootstrapRewards.sol). Tests at [test/BootstrapRewards.t.sol](../test/BootstrapRewards.t.sol) (26 unit tests).
 
 ---
 
@@ -87,13 +87,15 @@ Worst-case treasury spend (before per-epoch caps):
 
 ## 5. Implementation sketch
 
-New standalone contract `BootstrapRewards.sol`:
+Standalone contract [src/BootstrapRewards.sol](../src/BootstrapRewards.sol):
 
-- Reads depositor balances by subscribing to `Transfer(address(0), to, ...)` / `Transfer(from, address(0), ...)` on `LiquidityVault` (ERC-20 mint/burn).
-- Accrues `shareSeconds` per user with a checkpoint on every deposit/withdraw.
-- Treasury routes 50% of its fee stream to `BootstrapRewards` for the program window (via `setTreasury(bootstrapRewards)` on the distributor for the 6 months, which automatically captures its share of every swap). After the program: `setTreasury(realTreasury)`. See [src/FeeDistributor.sol](../src/FeeDistributor.sol#L84).
-- `claim(epoch)` is pull-based; no gas griefing.
-- Admin can `end()` early; unclaimed funds sweep back to treasury after the 90-day claim window.
+- Becomes the FeeDistributor's treasury for the program window via `setTreasury(bootstrapRewards)` ([src/FeeDistributor.sol](../src/FeeDistributor.sol#L84)). After the program: `setTreasury(realTreasury)`.
+- `pullInflow()` (permissionless, idempotent) splits any new payout-asset balance: `bonusShareBps` (5000 = 50%) into the active epoch's `bonusPool` (capped by `perEpochCap`), the rest forwarded to `realTreasury`. Overflow above the cap also forwards to `realTreasury`.
+- `poke(user)` (permissionless) accrues share-seconds for `user` over `[lastPoke, min(now, programEnd)]` using the user's balance at lastPoke, clipped to `perWalletShareCap`, with a `dwellPeriod` (7-day) gate.
+- **Finalization window**: after epochEnd, claims are locked for `finalizationDelay` (7 days). During this window, anyone can `poke` any depositor so totalShareSeconds converges to its true value. This eliminates the order-dependent claim race that would otherwise let the first claimer drain the pool.
+- `claim(epoch)` (pull-style) opens at `epochEnd + finalizationDelay`, valid for `claimWindow` (90 days). Auto-pokes the caller before computing payout = `bonusPool * userSS / totalSS`.
+- `sweepEpoch(epoch)` (permissionless, after claim window) returns unclaimed dust to `realTreasury`.
+- `sweepToken(token)` (owner) forwards any non-payout token (e.g. WETH inflows when the swap currency was currency0) to `realTreasury`. Cannot sweep the payout asset.
 
 No changes required to `DynamicFeeHook`, `FeeDistributor`, or `LiquidityVault` — the whole program is implemented in one external contract plus a treasury-address swap.
 
