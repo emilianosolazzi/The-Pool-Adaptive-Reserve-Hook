@@ -110,9 +110,4 @@ Technical implementation details are intentionally omitted from this public docu
 
 ---
 
-## 7. UI copy (drop-in)
 
-**Headline:** “Earn LP fees + a 6-month early-depositor bonus.”
-**Subhead:** “First $100K TVL shares 50% of treasury swap fees for 6 months. Time-weighted, capped, paid in USDC.”
-**CTA:** “Deposit USDC — eligibility starts after 7 days.”
-**Fine print:** “Bonus is share-seconds-weighted, capped at $25K per wallet and $10K per monthly epoch. Transfers of vault shares forfeit unclaimed bonus. Program ends after 180 days or when the $100K TVL window closes. Not investment advice.”
