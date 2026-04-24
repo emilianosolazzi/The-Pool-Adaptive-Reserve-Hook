@@ -99,7 +99,7 @@ Technical implementation details are intentionally omitted from this public docu
 
 ---
 
-## 6. Honest caveats to put on the UI
+## 6. Honest caveats 
 
 - The bonus is a **temporary promotional rebate**, not protocol yield. It ends at the earlier of 180 days or program cap exhaustion.
 - Share-seconds accrual **starts after 7 days of continuous deposit**.
