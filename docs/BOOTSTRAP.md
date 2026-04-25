@@ -20,7 +20,7 @@ This is a yield kicker on top of the normal LP fee share, not a change to the ba
 |---|---|---|
 | Eligible TVL cap | **$100,000** in vault asset (USDC) | Matches the external-audit trigger in [README.md](../README.md#L174). Above this, the program stops adding new eligible shares. |
 | Program duration | **180 days** from `programStart` | Short enough to be a bootstrap, long enough to cover a full market cycle. |
-| Treasury rebate share | **50% of treasury fees accrued during the program window** | Treasury is `20%` of the 25 bps hook fee → rebate is ~2.5 bps of gross swap volume. See [src/FeeDistributor.sol](../src/FeeDistributor.sol#L16). |
+| Treasury rebate share | **50% of treasury fees accrued during the program window** | Treasury share is currently `20%` of the 25 bps hook fee → rebate is ~2.5 bps of gross swap volume. The split is owner-tunable but hard-capped at 50% treasury / 50% LPs in [src/FeeDistributor.sol](../src/FeeDistributor.sol#L18-L21). |
 | Epoch length | **30 days** (6 epochs total) | Monthly payout; bounds gas and accounting windows. |
 | Per-epoch hard cap | **$10,000 USDC** | Protects the treasury if volume spikes. If `rebate > cap`, the excess stays in treasury. |
 | Accounting unit | **share-seconds** | Time-weighted; first-block snipers cannot farm a month's payout with a 1-block deposit. |
@@ -80,7 +80,7 @@ Worst-case treasury spend (before per-epoch caps):
 | Whale dominating the bonus | Per-wallet eligibility cap of $25k. |
 | Sybil splitting | Not fully solvable on-chain; acceptable at this size. At $100k TVL cap, Sybil returns are bounded by the per-epoch cap. |
 | Share-token transfer to farm multiple wallets | Eligibility is tracked per original depositor address, not per share balance. Transferring shares forfeits bonus. |
-| Sandwich / wash-trading to inflate treasury fees | Already mitigated by the 1.5× volatility multiplier + per-block reference-price update: [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L34), [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L35), [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L140). Volatile wash trades pay 1.5× to the same treasury pool that funds the rebate. |
+| Sandwich / wash-trading to inflate treasury fees | Already mitigated by the 1.5× volatility multiplier + per-block reference-price update: [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L34-L35), [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L153-L155). Volatile wash trades pay 1.5× to the same treasury pool that funds the rebate. |
 | Treasury drain by spike | `cap_e = $10k` per epoch; excess stays in treasury. |
 
 ---
@@ -104,9 +104,9 @@ Technical implementation details are intentionally omitted from this public docu
 - The bonus is a **temporary promotional rebate**, not protocol yield. It ends at the earlier of 180 days or program cap exhaustion.
 - Share-seconds accrual **starts after 7 days of continuous deposit**.
 - Transferring your vault shares **forfeits unclaimed bonus**.
-- Impermanent loss and smart-contract risk are unchanged by the program. The vault is single-sided OOR; if the price moves into range, part of your USDC converts to the other asset. See [src/LiquidityVault.sol](../src/LiquidityVault.sol#L206), [src/LiquidityVault.sol](../src/LiquidityVault.sol#L208).
-- External audit is **scheduled at $100K TVL**, not yet completed. See [README.md](../README.md#L174).
-- Owner controls (pause, performance fee up to 20%, hook fee cap up to 10%) exist; see [src/LiquidityVault.sol](../src/LiquidityVault.sol#L411), [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L191).
+- Impermanent loss and smart-contract risk are unchanged by the program. The vault is single-sided OOR; if the price moves into range, part of your USDC converts to the other asset. See [src/LiquidityVault.sol](../src/LiquidityVault.sol#L238-L246).
+- External audit (TSI Audit Scanner) was run on 2026-04-25 against commit `22894ce`; **all findings (2 High, 1 Medium, 1 Medium-defense, 3 Low, info) were remediated** before publication. Full report: [audits/the-pool_audit_2026-04-25.md](../audits/the-pool_audit_2026-04-25.md). The internal-audit summary remains in [README.md](../README.md#L142-L172).
+- Owner controls (pause, performance fee up to 20%, hook fee cap up to 10%, treasury share up to 50%) exist; see [src/LiquidityVault.sol](../src/LiquidityVault.sol#L458) (`pause`), [src/LiquidityVault.sol](../src/LiquidityVault.sol#L467) (`setPerformanceFeeBps`), [src/DynamicFeeHook.sol](../src/DynamicFeeHook.sol#L204) (`setMaxFeeBps`), [src/FeeDistributor.sol](../src/FeeDistributor.sol#L102) (`setTreasuryShare`).
 
 ---
 
