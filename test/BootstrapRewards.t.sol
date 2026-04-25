@@ -182,9 +182,43 @@ contract BootstrapRewardsTest is Test {
         vm.warp(programStart + 19 days);
         bootstrap.poke(alice);
 
-        // Alice had a 7-day accrued window from day 7 to day 14 = 7d * 1000.
+        // POST H-3 FIX: the unpoked interval is credited at
+        // min(lastBalance, currentBalance). At day 14 lastBalance was still
+        // 1000 (set at day 0) but currentBalance dropped to 0, so the
+        // [day0..day14] interval credits 0 share-seconds. This is the
+        // documented defensive behavior: depositors must call poke() before
+        // any balance reduction or they forfeit the unaccrued window.
         uint256 ss = bootstrap.userEpochShareSeconds(alice, 0);
-        assertEq(ss, 1_000e18 * 7 days, "only the pre-transfer window");
+        assertEq(ss, 0, "no credit when poke skipped before transfer");
+    }
+
+    /// @notice Regression for H-3: without the min(lastBalance, currentBalance)
+    /// floor in _poke, an attacker could hold X shares briefly, withdraw to
+    /// dust without poking, and later receive credit for the full interval at
+    /// the snapshot balance X. Verify that path now credits ~zero (only the
+    /// dust balance accrues).
+    function test_H3_lazyPoke_overClaim_isMitigated() public {
+        // T=0: alice deposits 1000 shares, pokes (lastBalance=1000, dwell starts).
+        vm.warp(programStart);
+        vaultShares.mint(alice, 1_000e18);
+        bootstrap.poke(alice);
+
+        // T=10d: alice withdraws all but 1 wei to bob. She does NOT poke.
+        vm.warp(programStart + 10 days);
+        vm.prank(alice);
+        vaultShares.transfer(bob, 1_000e18 - 1);
+        // Alice's storage still says lastBalance=1000e18; on-chain balance is 1.
+
+        // T=29d: long after dwell, just before epoch 0 ends, alice pokes.
+        vm.warp(programStart + 29 days);
+        bootstrap.poke(alice);
+
+        // Pre-fix, alice would have been credited (29 - 7) days * 1000e18.
+        // Post-fix, the interval is clamped to min(1000e18, 1) = 1, so the
+        // accrual is at most 22 days * 1 = 22 wei-shares-seconds.
+        uint256 ss = bootstrap.userEpochShareSeconds(alice, 0);
+        uint256 attackerCeiling = 22 days * 1;
+        assertLe(ss, attackerCeiling, "over-claim attack neutralized");
     }
 
     // ---------------------------------------------------------------

@@ -344,19 +344,36 @@ contract BootstrapRewards is Ownable2Step, ReentrancyGuard {
             return;
         }
 
-        // Credit share-seconds for [u.lastPoke, accrualEnd] using u.lastBalance.
+        // Read current balance once; we need it both for the conservative
+        // accrual cap below and for the post-accrual state refresh.
+        uint256 newBal = vault.balanceOf(user);
+
+        // Credit share-seconds for [u.lastPoke, accrualEnd].
+        //
+        // SECURITY: We attribute the unpoked interval to
+        // min(u.lastBalance, newBal). Without the floor, a depositor who
+        // withdraws (or transfers) shares between pokes — the vault has no
+        // hook into BootstrapRewards — could re-claim the entire interval
+        // at their pre-withdrawal balance. By taking the minimum we make
+        // the lazy-poke model strictly conservative against the program:
+        // unpoked balance reductions reduce accrual; unpoked balance
+        // increases do not retroactively boost accrual (those still require
+        // a poke to register). Front-ends should still call poke() on
+        // deposit so increases start accruing immediately.
         uint256 accrualEnd = block.timestamp < programEnd() ? block.timestamp : programEnd();
-        if (accrualEnd > u.lastPoke && u.lastBalance > 0 && u.firstDepositTime != 0) {
-            // Dwell cutoff: no accrual before firstDepositTime + dwellPeriod.
-            uint256 dwellEnd = uint256(u.firstDepositTime) + uint256(dwellPeriod);
-            uint256 start = u.lastPoke > dwellEnd ? u.lastPoke : dwellEnd;
-            if (accrualEnd > start) {
-                _accrueInterval(user, start, accrualEnd, u.lastBalance);
+        if (accrualEnd > u.lastPoke && u.firstDepositTime != 0) {
+            uint256 effective = uint256(u.lastBalance) < newBal ? uint256(u.lastBalance) : newBal;
+            if (effective > 0) {
+                // Dwell cutoff: no accrual before firstDepositTime + dwellPeriod.
+                uint256 dwellEnd = uint256(u.firstDepositTime) + uint256(dwellPeriod);
+                uint256 start = u.lastPoke > dwellEnd ? u.lastPoke : dwellEnd;
+                if (accrualEnd > start) {
+                    _accrueInterval(user, start, accrualEnd, effective);
+                }
             }
         }
 
         // Refresh to current balance. Handle dwell reset if balance hit 0.
-        uint256 newBal = vault.balanceOf(user);
         if (newBal == 0) {
             u.firstDepositTime = 0;
         } else if (u.firstDepositTime == 0) {
