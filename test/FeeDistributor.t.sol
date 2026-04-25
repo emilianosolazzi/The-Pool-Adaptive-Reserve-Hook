@@ -194,4 +194,43 @@ contract FeeDistributorTest is Test {
 
         assertEq(treasuryGot + lpsGot, amount);
     }
+
+    // ── Audit hardening (Info) ──────────────────────────────────────────────
+
+    /// Owner can adjust treasuryShare; cap is MAX_TREASURY_SHARE (50).
+    function test_setTreasuryShare_ownerAndCap() public {
+        assertEq(distributor.treasuryShare(), 20);
+
+        distributor.setTreasuryShare(35);
+        assertEq(distributor.treasuryShare(), 35);
+
+        // LP share is the complement.
+        assertEq(distributor.lpShare(), 65);
+
+        // Cap.
+        vm.expectRevert("SHARE_TOO_HIGH");
+        distributor.setTreasuryShare(51);
+
+        // Non-owner.
+        vm.prank(makeAddr("rando"));
+        vm.expectRevert();
+        distributor.setTreasuryShare(10);
+    }
+
+    /// After setTreasuryShare, distributions split using the new ratio.
+    function test_setTreasuryShare_appliesToNextDistribution() public {
+        distributor.setTreasuryShare(40); // 40 / 60
+
+        Currency feeCur = poolKey.currency0;
+        address tokenAddr = Currency.unwrap(feeCur);
+        uint256 amount = 100e6;
+        MockERC20(tokenAddr).mint(address(distributor), amount);
+
+        uint256 treasuryBefore = MockERC20(tokenAddr).balanceOf(treasury);
+        vm.prank(hookAddr);
+        distributor.distribute(feeCur, amount);
+
+        assertEq(MockERC20(tokenAddr).balanceOf(treasury) - treasuryBefore, (amount * 40) / 100);
+        assertEq(distributor.totalToLPs(), amount - (amount * 40) / 100);
+    }
 }

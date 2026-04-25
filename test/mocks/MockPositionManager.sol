@@ -33,5 +33,17 @@ contract MockPositionManager {
             IERC20(_yieldToken).transfer(_yieldVault, _yieldAmount);
             _yieldAmount = 0;
         }
+        // If a "race" is queued, simulate another minter slipping in by
+        // bumping nextTokenId once more before returning. This makes
+        // post-call `nextTokenId() == expectedTokenId + 1` fail in the vault.
+        if (_raceCount > 0) {
+            _nextId += _raceCount;
+            _raceCount = 0;
+        }
     }
+
+    /// @dev Test helper: queue `n` extra ID bumps to be applied after the
+    ///      next modifyLiquidities call, simulating concurrent minters.
+    uint256 private _raceCount;
+    function queueRace(uint256 n) external { _raceCount = n; }
 }
