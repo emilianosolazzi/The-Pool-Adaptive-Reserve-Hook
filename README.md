@@ -164,14 +164,18 @@ All critical paths have been reviewed with emphasis on correctness, arithmetic p
 
 | Category | Count | Configuration |
 |---|---|---|
-| Unit tests | 93 | — |
+| Unit tests | 107 | — |
 | Integration tests | 8 | Real v4 PoolManager |
 | Stateful invariants | 4 | 256 runs × depth 15 |
-| **Total** | **105** | **0 failures** |
+| **Total** | **119** | **0 failures** |
 
-### External Audit
+### External Audit: Complete
 
-Scheduled at $100K TVL. The system is independently built and self-funded. Security spend is tied to capital at risk — not optics.
+Independent third-party audit by **TSI Audit Scanner** completed **2026-04-25** against commit `22894ce`. All findings (2 High, 1 Medium, 1 Medium defense-in-depth, 3 Low, plus informational items) were remediated before the report was finalized — the published verdict is **PASSED**.
+
+Full report: [audits/the-pool_audit_2026-04-25.md](audits/the-pool_audit_2026-04-25.md).
+
+A second external audit is scheduled at $100K TVL. The system is independently built and self-funded. Security spend is tied to capital at risk — not optics.
 
 ### Verification
 
