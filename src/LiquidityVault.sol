@@ -168,6 +168,35 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         return 6;
     }
 
+    /// @notice Coarse vault state for UIs / monitors.
+    /// @dev    PAUSED takes precedence (no deposits/withdrawals possible).
+    ///         Otherwise we report whether the configured tick range
+    ///         contains the live pool price. OUT_OF_RANGE is the normal
+    ///         operating state for the single-sided USDC vault while ETH
+    ///         trades above the range; IN_RANGE means the position is
+    ///         actively converting and earning swap fees. UNCONFIGURED
+    ///         is returned before `setPoolKey` has been called.
+    enum VaultStatus {
+        UNCONFIGURED,
+        PAUSED,
+        IN_RANGE,
+        OUT_OF_RANGE
+    }
+
+    /// @notice Returns the current operational status of the vault.
+    function vaultStatus() public view returns (VaultStatus) {
+        if (paused()) return VaultStatus.PAUSED;
+        if (!_poolKeySet) return VaultStatus.UNCONFIGURED;
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
+        if (sqrtPriceX96 == 0) return VaultStatus.UNCONFIGURED;
+        uint160 sqrtLower = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(tickUpper);
+        if (sqrtPriceX96 >= sqrtLower && sqrtPriceX96 < sqrtUpper) {
+            return VaultStatus.IN_RANGE;
+        }
+        return VaultStatus.OUT_OF_RANGE;
+    }
+
     /// @inheritdoc ERC4626
     function maxDeposit(address) public view override returns (uint256) {
         if (paused() || !_poolKeySet) return 0;

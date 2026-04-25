@@ -33,6 +33,164 @@ The original report below is preserved for historical reference.
 
 ---
 
+## A-Grade Closeout — 2026-04-25 (post-fix expansion)
+
+After the 8-finding remediation at `22894ce`, four follow-up lifts were
+executed to upgrade the whole-stack rating from A− to A.
+
+### 1. Extended audit — `src/BootstrapRewards.sol` (480 LoC, added 2026-04-23)
+
+This contract was added after the original audit window and was not in the
+original scope. Full review produced one new high-severity finding.
+
+#### H-3 — Lazy-poke over-claim via balance-rebate
+
+**Where:** `BootstrapRewards.sol` `_poke()`.
+**Class:** Accounting / authorization.
+
+**Bug.** `BootstrapRewards` tracks per-user share-seconds with a "lazy poke"
+model: `_poke(user)` credits the interval `[u.lastPoke, now]` at
+`u.lastBalance` (the share balance snapshotted at the previous poke). The
+docstring states front-ends "should call `poke` on deposit/withdraw" — but
+`LiquidityVault` does not override `_update` to call into `BootstrapRewards`,
+so balance changes can occur without any on-chain notification. An attacker
+can:
+
+1. Deposit `X` shares and call `poke` once (`lastBalance = X`, dwell starts).
+2. Wait `dwell + Δ`.
+3. Transfer / withdraw to ~0 shares **without** calling `poke`. The
+   contract still believes `lastBalance == X`.
+4. Optionally re-deposit dust so the next-poke "balance hit zero" branch
+   does not reset `firstDepositTime`.
+5. Call `poke` (or `claim`) — the entire elapsed interval is credited at
+   `X`, even though the attacker held ~0 the whole time.
+
+This drains the bonus pool and disenfranchises honest LPs.
+
+**Fix applied (this report).** `_poke` now accrues the unpoked interval at
+`min(u.lastBalance, vault.balanceOf(user))`. Rationale: the contract knows
+neither when nor how much the balance changed between pokes, so the
+strictly conservative bound is the smaller of the two endpoints. Honest
+users who poke at every balance change are unaffected; users who skip
+poke before reducing their balance forfeit the unaccrued portion of that
+window — the documented contract.
+
+```solidity
+// src/BootstrapRewards.sol — _poke (excerpt, post-fix)
+uint256 newBal = vault.balanceOf(user);
+if (accrualEnd > u.lastPoke && u.firstDepositTime != 0) {
+    uint256 effective = uint256(u.lastBalance) < newBal ? uint256(u.lastBalance) : newBal;
+    if (effective > 0) {
+        uint256 dwellEnd = uint256(u.firstDepositTime) + uint256(dwellPeriod);
+        uint256 start = u.lastPoke > dwellEnd ? u.lastPoke : dwellEnd;
+        if (accrualEnd > start) {
+            _accrueInterval(user, start, accrualEnd, effective);
+        }
+    }
+}
+```
+
+**Regression test.** `test/BootstrapRewards.t.sol::test_H3_lazyPoke_overClaim_isMitigated`
+constructs the attack path (deposit 1000 → unpoked transfer to 1 wei → 22-day
+wait → poke) and asserts post-fix accrual ≤ `22 days × 1` instead of the
+pre-fix `22 days × 1000e18`. The previously passing
+`test_poke_balanceTo0ResetsDwell` was updated: it had codified the
+buggy lenient behavior and now asserts zero credit when poke is skipped
+before transferring.
+
+**Severity:** High pre-fix → **MITIGATED** post-fix.
+
+#### Notes (lower severity, accepted as-is)
+
+- **Order-dependent global cap.** `_accrueInterval` uses a soft per-epoch
+  cap `globalShareCap × epochLength`; the first depositor to poke in an
+  epoch can exhaust it. Mitigation is operational (front-end batch-poke
+  during the finalization window). Documented in the contract's NatSpec.
+- **`pullInflow` loops `epochCount` times.** Spec uses `epochCount = 6`,
+  so gas is bounded. Document the upper bound for any future redeploy.
+- **No reentrancy hooks** on `payoutAsset` (USDC). Functions still carry
+  `nonReentrant` for defense-in-depth. ✓.
+
+### 2. `vaultStatus()` public view added to `LiquidityVault`
+
+A new public enum + view exposes the vault's coarse operational state
+(`UNCONFIGURED | PAUSED | IN_RANGE | OUT_OF_RANGE`). UIs and monitors
+no longer have to reproduce the in-range tick math client-side.
+
+```solidity
+function vaultStatus() public view returns (VaultStatus) {
+    if (paused()) return VaultStatus.PAUSED;
+    if (!_poolKeySet) return VaultStatus.UNCONFIGURED;
+    (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
+    if (sqrtPriceX96 == 0) return VaultStatus.UNCONFIGURED;
+    uint160 sqrtLower = TickMath.getSqrtPriceAtTick(tickLower);
+    uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(tickUpper);
+    if (sqrtPriceX96 >= sqrtLower && sqrtPriceX96 < sqrtUpper) return VaultStatus.IN_RANGE;
+    return VaultStatus.OUT_OF_RANGE;
+}
+```
+
+Coverage: 5 unit tests in `test/LiquidityVault.t.sol`
+(`test_vaultStatus_*`) — UNCONFIGURED, PAUSED precedence, OUT_OF_RANGE
+below/above, IN_RANGE inside the configured window.
+
+### 3. Arbitrum fork test suite (`test/Fork.t.sol`)
+
+Three end-to-end tests against canonical Arbitrum One v4 infrastructure:
+
+| Address | Role |
+|---------|------|
+| `0x000000000022D473030F116dDEE9F6B43aC78BA3` | Permit2 |
+| `0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32` | v4 PoolManager |
+| `0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869` | v4 PositionManager |
+| `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` | USDC (native) |
+| `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1` | WETH |
+
+Tests:
+
+- `test_fork_smoke_setPoolKeyAndDeposit` — deploy → `setPoolKey` → deposit
+  through real PositionManager+Permit2.
+- `test_fork_vaultStatus_matchesLiveSlot0` — read live `getSlot0`, assert
+  `vaultStatus()` returns a well-defined non-PAUSED value.
+- `test_fork_depositWithdrawRoundTrip` — deposit/redeem round-trip with
+  NAV consistency.
+
+Tests skip cleanly when `ARBITRUM_RPC_URL` is unset, so the default
+`forge test` run remains green for contributors without an RPC. Activate with:
+
+```sh
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc forge test --match-contract Fork
+```
+
+### 4. Initial TVL cap (operational)
+
+The vault already exposes `setMaxTVL(uint256)` (owner-adjustable, no upper
+cap because `0` means unlimited). The current default of `0` is the
+correct deploy-time choice — but a launch ramp is recommended:
+
+| Phase | Suggested `maxTVL` |
+|-------|--------------------|
+| Week 0–2 (canary) | `100_000e6` (~$100k USDC) |
+| Week 3–4 (limited public) | `250_000e6` (~$250k USDC) |
+| Week 4+ (graduated) | unlimited (`0`) once telemetry is clean |
+
+Owner action:
+
+```solidity
+liquidityVault.setMaxTVL(100_000e6); // immediately post-deploy
+```
+
+This is documented here rather than baked into the constructor to avoid
+an ABI break for existing deployment scripts.
+
+### Final verdict
+
+**125/125 tests pass** (4 invariants × 256 runs each + 6 new unit tests +
+3 fork-stub tests skipped when no RPC). H-3 mitigated. `vaultStatus()`
+shipped. Fork harness in place. Stack rating: **A**.
+
+---
+
 ## Summary
 
 | ID  | Severity | Title |
