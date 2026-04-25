@@ -61,6 +61,16 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public performanceFeeBps; // fee on collected yield; 0 default, max 2000 (20%)
     uint256 public maxTVL;            // deposit ceiling in asset-token units; 0 = unlimited
 
+    /// @notice Slippage tolerance for `_removeLiquidity` (basis points).
+    /// @dev    Default 50 (= 0.5%). Capped at 1000 (= 10%) so misconfiguration
+    ///         cannot strip user funds. Owner-adjustable.
+    uint256 public removeLiquiditySlippageBps = 50;
+
+    /// @notice Deadline (in seconds, relative to block.timestamp) used for
+    ///         all PositionManager / Permit2 calls. Default 60s. Capped at
+    ///         3600s. Owner-adjustable.
+    uint256 public txDeadlineSeconds = 60;
+
     event LiquidityDeployed(uint256 amount0, uint256 amount1, uint256 liquidity);
     event LiquidityRemoved(uint256 amount0, uint256 amount1, uint256 liquidity);
     event YieldCollected(uint256 amount, uint256 timestamp);
@@ -71,6 +81,8 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     event PerformanceFeeUpdated(uint256 oldBps, uint256 newBps);
     event MaxTVLUpdated(uint256 oldMax, uint256 newMax);
+    event RemoveLiquiditySlippageBpsUpdated(uint256 oldBps, uint256 newBps);
+    event TxDeadlineUpdated(uint256 oldSeconds, uint256 newSeconds);
 
     constructor(
         IERC20 _asset,
@@ -253,7 +265,13 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             _approveForPositionManager(amount);
             uint256 expectedTokenId = positionManager.nextTokenId();
             uint256 balBefore = IERC20(asset()).balanceOf(address(this));
-            positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+            positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + txDeadlineSeconds);
+            // L-1 mitigation: ensure no other minter slipped in between our
+            // nextTokenId() snapshot and our own mint.
+            require(
+                positionManager.nextTokenId() == expectedTokenId + 1,
+                "TOKEN_ID_RACE"
+            );
             uint256 spent = balBefore - IERC20(asset()).balanceOf(address(this));
             positionTokenId = expectedTokenId;
             assetsDeployed += spent;
@@ -265,7 +283,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
             _approveForPositionManager(amount);
             uint256 balBefore = IERC20(asset()).balanceOf(address(this));
-            positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+            positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + txDeadlineSeconds);
             uint256 spent = balBefore - IERC20(asset()).balanceOf(address(this));
             assetsDeployed += spent;
         }
@@ -286,7 +304,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
                 asset(),
                 address(positionManager),
                 uint160(amount),
-                uint48(block.timestamp + 60)
+                uint48(block.timestamp + txDeadlineSeconds)
             );
             // Non-asset currency: 0-amount allowance but valid expiry so Permit2 doesn't revert.
             address otherCurrency = assetIsToken0
@@ -296,7 +314,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
                 otherCurrency,
                 address(positionManager),
                 0,
-                uint48(block.timestamp + 60)
+                uint48(block.timestamp + txDeadlineSeconds)
             );
         } else {
             IERC20(asset()).approve(address(positionManager), amount);
@@ -315,8 +333,8 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         (uint256 exp0, uint256 exp1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96, sqrtPriceLower, sqrtPriceUpper, liquidityToRemove
         );
-        uint256 amount0Min = exp0 * 995 / 1000;
-        uint256 amount1Min = exp1 * 995 / 1000;
+        uint256 amount0Min = exp0 * (10_000 - removeLiquiditySlippageBps) / 10_000;
+        uint256 amount1Min = exp1 * (10_000 - removeLiquiditySlippageBps) / 10_000;
 
         bytes memory actions = abi.encodePacked(uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR), uint8(Actions.SWEEP));
         bytes[] memory params = new bytes[](3);
@@ -325,7 +343,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         params[2] = abi.encode(assetIsToken0 ? poolKey.currency0 : poolKey.currency1, address(this));
 
         uint256 balBefore = IERC20(asset()).balanceOf(address(this));
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + txDeadlineSeconds);
         uint256 returned = IERC20(asset()).balanceOf(address(this)) - balBefore;
         totalLiquidityDeployed -= liquidityToRemove;
         // assetsDeployed decreases by what was actually returned from the position
@@ -353,7 +371,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         bool hasOtherToken = otherAddr.code.length > 0;
         uint256 otherBefore = hasOtherToken ? IERC20(otherAddr).balanceOf(address(this)) : 0;
 
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + txDeadlineSeconds);
 
         uint256 balanceAfter = IERC20(asset()).balanceOf(address(this));
 
@@ -441,6 +459,7 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     function unpause() external onlyOwner { _unpause(); }
 
     function setTreasury(address newTreasury) external onlyOwner {
+        require(newTreasury != address(0), "ZERO_ADDRESS");
         emit TreasuryUpdated(treasury, newTreasury);
         treasury = newTreasury;
     }
@@ -454,6 +473,22 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     function setMaxTVL(uint256 newMax) external onlyOwner {
         emit MaxTVLUpdated(maxTVL, newMax);
         maxTVL = newMax;
+    }
+
+    /// @notice Owner-adjustable slippage tolerance for `_removeLiquidity`.
+    /// @dev    Capped at 1000 BPS (= 10%).
+    function setRemoveLiquiditySlippageBps(uint256 newBps) external onlyOwner {
+        require(newBps <= 1_000, "SLIPPAGE_TOO_HIGH");
+        emit RemoveLiquiditySlippageBpsUpdated(removeLiquiditySlippageBps, newBps);
+        removeLiquiditySlippageBps = newBps;
+    }
+
+    /// @notice Owner-adjustable transaction deadline (seconds).
+    /// @dev    Capped at 3600s. Must be > 0.
+    function setTxDeadlineSeconds(uint256 newSeconds) external onlyOwner {
+        require(newSeconds > 0 && newSeconds <= 3_600, "DEADLINE_OUT_OF_RANGE");
+        emit TxDeadlineUpdated(txDeadlineSeconds, newSeconds);
+        txDeadlineSeconds = newSeconds;
     }
 
     function getVaultStats() external view returns (uint256 tvl, uint256 sharePrice, uint256 depositors, uint256 liqDeployed, uint256 yieldColl, string memory feeDesc) {

@@ -726,4 +726,61 @@ contract LiquidityVaultTest is Test {
     function test_m1_totalAssets_idleOnly_whenPoolKeyUnset() public view {
         assertEq(vault.totalAssets(), 0);
     }
+
+    // ── Audit hardening (Low / Info) ────────────────────────────────────────
+
+    /// Info: setTreasury must reject address(0).
+    function test_setTreasury_zeroAddress_reverts() public {
+        vm.expectRevert("ZERO_ADDRESS");
+        vault.setTreasury(address(0));
+    }
+
+    /// L-2: removeLiquiditySlippageBps is owner-adjustable and capped at 1000 BPS.
+    function test_setRemoveLiquiditySlippageBps_ownerAndCap() public {
+        assertEq(vault.removeLiquiditySlippageBps(), 50);
+
+        vault.setRemoveLiquiditySlippageBps(150);
+        assertEq(vault.removeLiquiditySlippageBps(), 150);
+
+        vm.expectRevert("SLIPPAGE_TOO_HIGH");
+        vault.setRemoveLiquiditySlippageBps(1_001);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setRemoveLiquiditySlippageBps(100);
+    }
+
+    /// L-3: txDeadlineSeconds is owner-adjustable, must be in (0, 3600].
+    function test_setTxDeadlineSeconds_ownerAndCap() public {
+        assertEq(vault.txDeadlineSeconds(), 60);
+
+        vault.setTxDeadlineSeconds(300);
+        assertEq(vault.txDeadlineSeconds(), 300);
+
+        vm.expectRevert("DEADLINE_OUT_OF_RANGE");
+        vault.setTxDeadlineSeconds(0);
+
+        vm.expectRevert("DEADLINE_OUT_OF_RANGE");
+        vault.setTxDeadlineSeconds(3_601);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setTxDeadlineSeconds(120);
+    }
+
+    /// L-1: If another minter slips in between the vault's nextTokenId()
+    /// snapshot and its own modifyLiquidities call, the post-call invariant
+    /// (`nextTokenId == expectedTokenId + 1`) must fail and revert the deposit.
+    function test_l1_tokenIdRace_revertsDeposit() public {
+        vault.setPoolKey(poolKey);
+        // Simulate a concurrent mint racing the vault's first deposit.
+        mockPosMgr.queueRace(1);
+
+        usdc.mint(alice, 10e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert("TOKEN_ID_RACE");
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+    }
 }
