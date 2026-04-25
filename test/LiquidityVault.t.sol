@@ -636,4 +636,94 @@ contract LiquidityVaultTest is Test {
         vault.pause();
         assertEq(vault.maxWithdraw(alice), 0);
     }
+
+    // ── Audit regressions ───────────────────────────────────────────────────
+
+    /// H-2: rescueIdle MUST refuse the pool's non-asset currency once the pool
+    /// is configured. Pre-fix the owner could silently sweep token balances
+    /// that legitimately belong to depositors (e.g. WETH released from an
+    /// in-range withdrawal of a USDC/WETH position).
+    function test_h2_rescueIdle_blocksNonAssetPoolCurrency() public {
+        // Configure a pool where currency1 is a real ERC20 (so otherAddr.code.length > 0).
+        MockERC20 weth = new MockERC20("Wrapped Ether", "WETH", 18);
+        address addrA = address(usdc);
+        address addrB = address(weth);
+        (address lo, address hi) = addrA < addrB ? (addrA, addrB) : (addrB, addrA);
+        PoolKey memory pk = PoolKey({
+            currency0: Currency.wrap(lo),
+            currency1: Currency.wrap(hi),
+            fee: 100,
+            tickSpacing: 1,
+            hooks: IHooks(address(vault))
+        });
+        vault.setPoolKey(pk);
+
+        // Simulate non-asset currency accumulating in the vault.
+        weth.mint(address(vault), 1 ether);
+
+        vm.expectRevert("POOL_CURRENCY");
+        vault.rescueIdle(address(weth));
+
+        // The other pool currency (asset itself) is still blocked by CANNOT_RESCUE_ASSET.
+        vm.expectRevert("CANNOT_RESCUE_ASSET");
+        vault.rescueIdle(address(usdc));
+
+        // Unrelated stray tokens are still recoverable.
+        MockERC20 stray = new MockERC20("Stray", "STR", 18);
+        stray.mint(address(vault), 7e18);
+        vault.rescueIdle(address(stray));
+        assertEq(stray.balanceOf(owner), 7e18);
+    }
+
+    /// M-1: Idle non-asset balance must contribute to totalAssets() so
+    /// remaining depositors don't lose value when the price moves into the
+    /// vault's range. Pre-fix totalAssets ignored the non-asset side entirely.
+    function test_m1_totalAssets_includesIdleNonAssetCurrency() public {
+        // Force WETH to sort lower than USDC by trying CREATE2 salts until
+        // the deployed address is lower than usdc's.
+        MockERC20 weth;
+        for (uint256 salt = 0; salt < 256; salt++) {
+            try new MockERC20{salt: bytes32(salt)}("Wrapped Ether", "WETH", 18) returns (MockERC20 deployed) {
+                if (address(deployed) < address(usdc)) {
+                    weth = deployed;
+                    break;
+                }
+            } catch {
+                // collision; try next salt
+            }
+        }
+        if (address(weth) == address(0)) {
+            vm.skip(true);
+            return;
+        }
+
+        PoolKey memory pk = PoolKey({
+            currency0: Currency.wrap(address(weth)),
+            currency1: Currency.wrap(address(usdc)),
+            fee: 100,
+            tickSpacing: 1,
+            hooks: IHooks(address(vault))
+        });
+        vault.setPoolKey(pk);
+
+        // Seed vault with 100 USDC of "asset idle" + 1 WETH of "other idle".
+        usdc.mint(address(vault), 100e6);
+        weth.mint(address(vault), 1e18);
+
+        // Configure mock pool price: 1 WETH = 2000 USDC.
+        // sqrtPriceX96 = sqrt(token1_per_token0_raw) * 2**96.
+        // raw ratio = 2000e6 / 1e18 = 2e-9; sqrt ≈ 4.4721e-5; * 2**96 ≈ 3.5432e+24.
+        uint160 sqrtPriceX96 = 3543191142285914207004270;
+        mockManager.setSlot0(sqrtPriceX96, 0);
+
+        // Expected NAV ≈ idleAsset + idleOther_in_asset_units = 100e6 + ~2_000e6.
+        uint256 nav = vault.totalAssets();
+        assertGt(nav, 100e6 + 1_900e6, "non-asset leg must be priced in");
+        assertLt(nav, 100e6 + 2_100e6 + 1, "no double counting");
+    }
+
+    /// M-1: With no pool key set, totalAssets falls back to idle asset only.
+    function test_m1_totalAssets_idleOnly_whenPoolKeyUnset() public view {
+        assertEq(vault.totalAssets(), 0);
+    }
 }

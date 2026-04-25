@@ -75,11 +75,17 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     function beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         external
         override
+        onlyPoolManager
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         if (address(key.hooks) != address(this)) return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
 
-        uint256 amountIn = params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        // amountSpecified < 0  -> exact-input  (specified = input  / unspecified = output)
+        // amountSpecified > 0  -> exact-output (specified = output / unspecified = input)
+        // The afterSwap return-delta is applied to the UNSPECIFIED currency, so the
+        // fee we charge in beforeSwap MUST be denominated in that same currency.
+        bool exactInput = params.amountSpecified < 0;
+        uint256 amountIn = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
         uint256 fee = (amountIn * HOOK_FEE_BPS) / BPS_DENOMINATOR;
 
         if (lastSqrtPriceX96 != 0) {
@@ -95,7 +101,13 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         uint256 feeCap = (amountIn * maxFeeBps) / BPS_DENOMINATOR;
         if (fee > feeCap) fee = feeCap;
 
-        Currency feeCurrency = params.zeroForOne ? key.currency1 : key.currency0;
+        // Unspecified-currency selection (matches v4 afterSwapReturnDelta semantics):
+        //   exactInput  + zeroForOne   -> unspecified = currency1
+        //   exactInput  + oneForZero   -> unspecified = currency0
+        //   exactOutput + zeroForOne   -> unspecified = currency0
+        //   exactOutput + oneForZero   -> unspecified = currency1
+        // i.e. unspecified is currency1 iff (zeroForOne == exactInput).
+        Currency feeCurrency = (params.zeroForOne == exactInput) ? key.currency1 : key.currency0;
         uint256 currencyAsUint = uint256(uint160(Currency.unwrap(feeCurrency)));
 
         assembly {
@@ -110,6 +122,7 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     function afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
         external
         override
+        onlyPoolManager
         returns (bytes4, int128)
     {
         uint256 fee;
