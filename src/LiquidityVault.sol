@@ -17,6 +17,7 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {LiquidityAmounts} from "v4-core-test/utils/LiquidityAmounts.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {IPositionManager} from "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
 import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
@@ -91,23 +92,50 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     function totalAssets() public view override returns (uint256) {
-        uint256 idle = IERC20(asset()).balanceOf(address(this));
-        // Live position valuation only when tokens were actually deployed.
-        // assetsDeployed == 0 in test environments (mock PositionManager
-        // doesn't transfer tokens) or after a full liquidity removal.
-        if (totalLiquidityDeployed == 0 || assetsDeployed == 0 || !_poolKeySet) return idle;
+        uint256 idleAsset = IERC20(asset()).balanceOf(address(this));
+        if (!_poolKeySet) return idleAsset;
 
-        // Compute the live asset-token value of the position at current price.
-        // When the pool price moves into range, part of the single-sided deposit
-        // is converted to the other token. Using the stale `assetsDeployed`
-        // bookkeeping would overstate totalAssets and cause withdrawals to revert.
+        // Always read live price so we can value any non-asset balance the
+        // vault may be holding (released from an in-range position, residual
+        // yield in the other currency, etc.).
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
-        uint160 sqrtA = TickMath.getSqrtPriceAtTick(tickLower);
-        uint160 sqrtB = TickMath.getSqrtPriceAtTick(tickUpper);
-        (uint256 amt0, uint256 amt1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96, sqrtA, sqrtB, uint128(totalLiquidityDeployed)
-        );
-        return idle + (assetIsToken0 ? amt0 : amt1);
+        if (sqrtPriceX96 == 0) return idleAsset;
+
+        // Live position valuation (both legs).
+        uint256 amt0;
+        uint256 amt1;
+        if (totalLiquidityDeployed > 0 && assetsDeployed > 0) {
+            uint160 sqrtA = TickMath.getSqrtPriceAtTick(tickLower);
+            uint160 sqrtB = TickMath.getSqrtPriceAtTick(tickUpper);
+            (amt0, amt1) = LiquidityAmounts.getAmountsForLiquidity(
+                sqrtPriceX96, sqrtA, sqrtB, uint128(totalLiquidityDeployed)
+            );
+        }
+
+        // Idle non-asset balance (e.g. WETH dust returned from a partial
+        // in-range withdrawal, or fees in the other currency).
+        address otherAddr = Currency.unwrap(assetIsToken0 ? poolKey.currency1 : poolKey.currency0);
+        uint256 idleOther = (otherAddr.code.length > 0) ? IERC20(otherAddr).balanceOf(address(this)) : 0;
+
+        // Convert non-asset units into asset units at current price:
+        //   priceX192 = sqrtPriceX96 ** 2 = price of token0 in token1 units, scaled by 2**192
+        //   token1_in_token0 = token1_amount * 2**192 / priceX192
+        //   token0_in_token1 = token0_amount * priceX192 / 2**192
+        // Use FullMath to avoid overflow on the 192-bit shift.
+        uint256 priceX192 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
+        if (assetIsToken0) {
+            // asset = token0 -> convert (amt1 + idleOther) to token0
+            uint256 otherTotal = amt1 + idleOther;
+            uint256 otherInAsset = priceX192 == 0
+                ? 0
+                : FullMath.mulDiv(otherTotal, 1 << 192, priceX192);
+            return idleAsset + amt0 + otherInAsset;
+        } else {
+            // asset = token1 -> convert (amt0 + idleOther) to token1
+            uint256 otherTotal = amt0 + idleOther;
+            uint256 otherInAsset = FullMath.mulDiv(otherTotal, priceX192, 1 << 192);
+            return idleAsset + amt1 + otherInAsset;
+        }
     }
 
     /// @notice ERC-4626 inflation-attack mitigation.
@@ -395,6 +423,15 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
     function rescueIdle(address token) external onlyOwner {
         require(token != asset(), "CANNOT_RESCUE_ASSET");
+        // Block rescue of either pool currency once the pool is configured.
+        // Non-asset balances of the pool's currencies represent depositor value
+        // (fees collected as the other token, or residue from in-range
+        // withdrawals) and are now counted in totalAssets(); the owner must not
+        // be able to silently extract them.
+        if (_poolKeySet) {
+            require(token != Currency.unwrap(poolKey.currency0), "POOL_CURRENCY");
+            require(token != Currency.unwrap(poolKey.currency1), "POOL_CURRENCY");
+        }
         uint256 idle = IERC20(token).balanceOf(address(this));
         require(idle > 0, "NO_IDLE");
         IERC20(token).safeTransfer(owner(), idle);

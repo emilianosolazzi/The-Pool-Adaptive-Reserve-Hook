@@ -34,7 +34,17 @@ contract MockPoolManager {
     }
 
     // sqrtPriceX96 = 1 in lowest 160 bits; yields 0 liquidity in LiquidityAmounts which keeps vault accounting clean
-    function extsload(bytes32) external pure returns (bytes32) {
-        return bytes32(uint256(1));
+    bytes32 private _slot0 = bytes32(uint256(1));
+
+    /// @dev Test helper: configure the bytes32 returned by extsload (and thus
+    ///      StateLibrary.getSlot0). Lowest 160 bits = sqrtPriceX96, next 24
+    ///      bits = current tick.
+    function setSlot0(uint160 sqrtPriceX96, int24 tick) external {
+        uint256 packed = uint256(sqrtPriceX96) | (uint256(uint24(tick)) << 160);
+        _slot0 = bytes32(packed);
+    }
+
+    function extsload(bytes32) external view returns (bytes32) {
+        return _slot0;
     }
 }

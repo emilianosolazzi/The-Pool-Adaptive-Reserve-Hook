@@ -79,6 +79,7 @@ contract DynamicFeeHookTest is Test {
         wrongKey.hooks = DynamicFeeHook(payable(address(0xdead)));
 
         SwapParams memory params = SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
+        vm.prank(address(mockManager));
         (bytes4 sel, , ) = hook.beforeSwap(address(this), wrongKey, params, "");
 
         assertEq(sel, DynamicFeeHook.beforeSwap.selector);
@@ -96,9 +97,11 @@ contract DynamicFeeHookTest is Test {
         });
 
         token1.mint(address(mockManager), expectedFee);
+        vm.prank(address(mockManager));
         hook.beforeSwap(address(this), poolKey, params, "");
         assertEq(hook.totalSwaps(), 1);
 
+        vm.prank(address(mockManager));
         hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
 
         assertEq(mockDistributor.callCount(), 1);
@@ -118,10 +121,13 @@ contract DynamicFeeHookTest is Test {
         });
 
         token1.mint(address(mockManager), fee);
+        vm.prank(address(mockManager));
         hook.beforeSwap(address(this), poolKey, params, "");
+        vm.prank(address(mockManager));
         hook.afterSwap(address(this), poolKey, params, delta, "");
 
         uint256 countBefore = mockDistributor.callCount();
+        vm.prank(address(mockManager));
         hook.afterSwap(address(this), poolKey, params, delta, "");
         assertEq(mockDistributor.callCount(), countBefore);
     }
@@ -140,7 +146,9 @@ contract DynamicFeeHookTest is Test {
         token1.mint(address(mockManager), feePerSwap * swaps);
 
         for (uint256 i = 0; i < swaps; i++) {
+            vm.prank(address(mockManager));
             hook.beforeSwap(address(this), poolKey, params, "");
+            vm.prank(address(mockManager));
             hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
         }
 
@@ -228,5 +236,110 @@ contract DynamicFeeHookTest is Test {
         assertEq(multiplierPct, 150); // 1.5x fee in volatile regime
         assertEq(refPrice,        0); // no swaps have occurred yet
         assertEq(refBlock,        0); // no swaps have occurred yet
+    }
+
+    // ── Audit regressions ───────────────────────────────────────────────────
+
+    /// M-2: hook callbacks must reject callers other than the PoolManager.
+    function test_m2_beforeSwap_revertsWhenNotPoolManager() public {
+        SwapParams memory p = SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
+        vm.expectRevert(); // BaseHook.NotPoolManager
+        hook.beforeSwap(address(this), poolKey, p, "");
+    }
+
+    function test_m2_afterSwap_revertsWhenNotPoolManager() public {
+        SwapParams memory p = SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
+        vm.expectRevert(); // BaseHook.NotPoolManager
+        hook.afterSwap(address(this), poolKey, p, toBalanceDelta(0, 0), "");
+    }
+
+    /// H-1: For exact-output swaps the fee must be charged in the UNSPECIFIED
+    /// (input) currency, because afterSwapReturnDelta is applied to the
+    /// unspecified side. Pre-fix this picked the OUTPUT currency, taking value
+    /// from the pool while billing the user on the input — net loss to LPs.
+    function test_h1_exactOutput_zeroForOne_takesFeeOnInputCurrency() public {
+        uint256 amountOut = 1e18;
+        uint256 expectedFee = (amountOut * 25) / 10_000;
+
+        // exact-output: amountSpecified > 0; specified = currency1 (output),
+        // unspecified = currency0 (input). Hook MUST take the fee in token0.
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: int256(amountOut),
+            sqrtPriceLimitX96: 0
+        });
+
+        // Fund the pool manager with the INPUT currency, not the output.
+        // If the hook (incorrectly) tried to take from currency1, the
+        // mockManager.take call would revert for missing balance.
+        token0.mint(address(mockManager), expectedFee);
+
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+        vm.prank(address(mockManager));
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+
+        // Distributor was paid in the unspecified (input) currency.
+        assertEq(mockDistributor.callCount(), 1, "fee not routed");
+        assertEq(mockDistributor.lastAmount(), expectedFee, "wrong fee amount");
+        assertEq(
+            Currency.unwrap(mockDistributor.lastCurrency()),
+            address(token0),
+            "fee must be charged in unspecified (input) currency"
+        );
+    }
+
+    /// H-1: Symmetric exact-output check for the oneForZero direction.
+    function test_h1_exactOutput_oneForZero_takesFeeOnInputCurrency() public {
+        uint256 amountOut = 1e18;
+        uint256 expectedFee = (amountOut * 25) / 10_000;
+
+        // oneForZero exact-output: input = currency1, output = currency0,
+        // unspecified = currency1.
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: int256(amountOut),
+            sqrtPriceLimitX96: 0
+        });
+
+        token1.mint(address(mockManager), expectedFee);
+
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+        vm.prank(address(mockManager));
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+
+        assertEq(
+            Currency.unwrap(mockDistributor.lastCurrency()),
+            address(token1),
+            "fee must be charged in unspecified (input) currency"
+        );
+    }
+
+    /// Sanity: exact-input direction selection is unchanged after the H-1 fix.
+    function test_h1_exactInput_oneForZero_takesFeeOnOutputCurrency() public {
+        uint256 amountIn = 1e18;
+        uint256 expectedFee = (amountIn * 25) / 10_000;
+
+        // oneForZero exact-input: input = currency1, output = currency0,
+        // unspecified = currency0 (output).
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: 0
+        });
+
+        token0.mint(address(mockManager), expectedFee);
+
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+        vm.prank(address(mockManager));
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+
+        assertEq(
+            Currency.unwrap(mockDistributor.lastCurrency()),
+            address(token0),
+            "fee currency must be unspecified (output) for exact-input"
+        );
     }
 }
