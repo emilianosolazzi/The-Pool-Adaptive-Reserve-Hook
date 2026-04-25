@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta, toBalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -19,6 +20,8 @@ import {MockFeeDistributor} from "./mocks/MockFeeDistributor.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
 contract DynamicFeeHookTest is Test {
+    using PoolIdLibrary for PoolKey;
+
     DynamicFeeHook public hook;
     MockPoolManager public mockManager;
     MockFeeDistributor public mockDistributor;
@@ -30,7 +33,7 @@ contract DynamicFeeHookTest is Test {
     int24 constant TICK_SPACING = 1;
 
     function setUp() public {
-        mockManager    = new MockPoolManager();
+        mockManager = new MockPoolManager();
         mockDistributor = new MockFeeDistributor();
 
         MockERC20 tA = new MockERC20("Token A", "TKA", 18);
@@ -60,7 +63,7 @@ contract DynamicFeeHookTest is Test {
     function test_feeCalculation_smallSwap() public view {
         // 1e18 * 25 / 10000 = 2.5e15; cap is 50 BPS of amountIn = 5e15 → base fee wins
         uint256 amountIn = 1e18;
-        (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
+        (uint256 feeAmount,,,,) = hook.getSwapFeeInfo(amountIn);
         assertEq(feeAmount, (amountIn * 25) / 10_000);
     }
 
@@ -69,7 +72,7 @@ contract DynamicFeeHookTest is Test {
         // The cap only triggers when the base (or volatility-scaled) fee exceeds maxFeeBps.
         // Verify via an explicit lower cap set in the next test.
         uint256 amountIn = 1e22;
-        (uint256 feeAmount,,,, ) = hook.getSwapFeeInfo(amountIn);
+        (uint256 feeAmount,,,,) = hook.getSwapFeeInfo(amountIn);
         // 25 BPS of 1e22 = 2.5e19, cap = 50 BPS of 1e22 = 5e19 → base wins
         assertEq(feeAmount, (amountIn * 25) / 10_000);
     }
@@ -80,7 +83,7 @@ contract DynamicFeeHookTest is Test {
 
         SwapParams memory params = SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
         vm.prank(address(mockManager));
-        (bytes4 sel, , ) = hook.beforeSwap(address(this), wrongKey, params, "");
+        (bytes4 sel,,) = hook.beforeSwap(address(this), wrongKey, params, "");
 
         assertEq(sel, DynamicFeeHook.beforeSwap.selector);
         assertEq(hook.totalSwaps(), 0);
@@ -90,11 +93,8 @@ contract DynamicFeeHookTest is Test {
         uint256 amountIn = 1e18;
         uint256 expectedFee = (amountIn * 25) / 10_000;
 
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -int256(amountIn),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
 
         token1.mint(address(mockManager), expectedFee);
         vm.prank(address(mockManager));
@@ -114,11 +114,8 @@ contract DynamicFeeHookTest is Test {
         uint256 fee = (amountIn * 25) / 10_000;
         BalanceDelta delta = toBalanceDelta(0, 0);
 
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -int256(amountIn),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
 
         token1.mint(address(mockManager), fee);
         vm.prank(address(mockManager));
@@ -132,16 +129,67 @@ contract DynamicFeeHookTest is Test {
         assertEq(mockDistributor.callCount(), countBefore);
     }
 
+    function test_afterSwap_revertsOnMismatchedPendingPoolId() public {
+        uint256 amountIn = 1e18;
+        uint256 fee = (amountIn * 25) / 10_000;
+        PoolKey memory otherKey = poolKey;
+        otherKey.fee = 3000;
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
+
+        token1.mint(address(mockManager), fee);
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+
+        vm.prank(address(mockManager));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DynamicFeeHook.PendingSwapMismatch.selector,
+                PoolId.unwrap(poolKey.toId()),
+                PoolId.unwrap(otherKey.toId())
+            )
+        );
+        hook.afterSwap(address(this), otherKey, params, toBalanceDelta(0, 0), "");
+    }
+
+    function test_afterSwap_revertsWhenFeeExceedsReturnDeltaDomain() public {
+        uint256 amountIn = (uint256(uint128(type(int128).max)) * 10_000 / 25) + 400;
+        uint256 expectedFee = (amountIn * 25) / 10_000;
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
+
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+
+        vm.prank(address(mockManager));
+        vm.expectRevert(abi.encodeWithSelector(DynamicFeeHook.HookFeeExceedsReturnDelta.selector, expectedFee));
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+    }
+
+    function test_afterSwap_zeroFeeStillRefreshesVolatilityReference() public {
+        mockManager.setSlot0(123, 0);
+
+        SwapParams memory params = SwapParams({zeroForOne: true, amountSpecified: -int256(3), sqrtPriceLimitX96: 0});
+
+        vm.prank(address(mockManager));
+        hook.beforeSwap(address(this), poolKey, params, "");
+        vm.prank(address(mockManager));
+        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+
+        (,, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo();
+        assertEq(refPrice, 123);
+        assertEq(refBlock, block.number);
+    }
+
     function test_stats_accumulateAcrossSwaps() public {
         uint256 amountIn = 1e18;
         uint256 feePerSwap = (amountIn * 25) / 10_000;
         uint256 swaps = 3;
 
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -int256(amountIn),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
 
         token1.mint(address(mockManager), feePerSwap * swaps);
 
@@ -210,8 +258,8 @@ contract DynamicFeeHookTest is Test {
         address newOwner = makeAddr("newOwner");
         hook.transferOwnership(newOwner);
 
-        assertEq(hook.owner(),        address(this)); // unchanged
-        assertEq(hook.pendingOwner(), newOwner);      // queued
+        assertEq(hook.owner(), address(this)); // unchanged
+        assertEq(hook.pendingOwner(), newOwner); // queued
 
         vm.prank(newOwner);
         hook.acceptOwnership();
@@ -230,12 +278,11 @@ contract DynamicFeeHookTest is Test {
 
     /// getVolatilityInfo returns correct constants and zero state before any swap.
     function test_getVolatilityInfo_defaults() public view {
-        (uint256 thresholdBps, uint256 multiplierPct, uint160 refPrice, uint256 refBlock) =
-            hook.getVolatilityInfo();
-        assertEq(thresholdBps,  100); // 1% inter-swap price move triggers multiplier
+        (uint256 thresholdBps, uint256 multiplierPct, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo();
+        assertEq(thresholdBps, 100); // 1% inter-swap price move triggers multiplier
         assertEq(multiplierPct, 150); // 1.5x fee in volatile regime
-        assertEq(refPrice,        0); // no swaps have occurred yet
-        assertEq(refBlock,        0); // no swaps have occurred yet
+        assertEq(refPrice, 0); // no swaps have occurred yet
+        assertEq(refBlock, 0); // no swaps have occurred yet
     }
 
     // ── Audit regressions ───────────────────────────────────────────────────
@@ -263,11 +310,8 @@ contract DynamicFeeHookTest is Test {
 
         // exact-output: amountSpecified > 0; specified = currency1 (output),
         // unspecified = currency0 (input). Hook MUST take the fee in token0.
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: int256(amountOut),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: int256(amountOut), sqrtPriceLimitX96: 0});
 
         // Fund the pool manager with the INPUT currency, not the output.
         // If the hook (incorrectly) tried to take from currency1, the
@@ -296,11 +340,8 @@ contract DynamicFeeHookTest is Test {
 
         // oneForZero exact-output: input = currency1, output = currency0,
         // unspecified = currency1.
-        SwapParams memory params = SwapParams({
-            zeroForOne: false,
-            amountSpecified: int256(amountOut),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: int256(amountOut), sqrtPriceLimitX96: 0});
 
         token1.mint(address(mockManager), expectedFee);
 
@@ -323,11 +364,8 @@ contract DynamicFeeHookTest is Test {
 
         // oneForZero exact-input: input = currency1, output = currency0,
         // unspecified = currency0 (output).
-        SwapParams memory params = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -int256(amountIn),
-            sqrtPriceLimitX96: 0
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
 
         token0.mint(address(mockManager), expectedFee);
 

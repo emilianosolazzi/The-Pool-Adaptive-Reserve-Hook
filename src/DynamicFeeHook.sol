@@ -14,15 +14,21 @@ import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 interface IFeeDistributor {
     function distribute(Currency currency, uint256 amount) external;
 }
 
 contract DynamicFeeHook is BaseHook, Ownable2Step {
+    using Math for uint256;
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
+
+    error InvalidSwapAmount();
+    error PendingSwapMismatch(bytes32 expectedPoolId, bytes32 actualPoolId);
+    error HookFeeExceedsReturnDelta(uint256 fee);
 
     uint24 public constant LP_FEE = 100;
     uint256 public constant HOOK_FEE_BPS = 25;
@@ -34,10 +40,11 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     uint256 private constant VOLATILITY_THRESHOLD_BPS = 100; // 1% inter-swap price move
     uint256 private constant VOLATILITY_FEE_MULTIPLIER = 150; // 1.5x fee in volatile regime
 
-    uint256 private constant PENDING_FEE_SLOT =
-        0xd1e54fc46e96497529fdb4b5abbcd802754a86c33bab838d6ce7d6ec96497b88;
-    uint256 private constant PENDING_CURRENCY_SLOT =
-        0x2977767698129b4908fb9b19423b38883970765ad9aba8979e231f45612fa01e;
+    uint256 private constant PENDING_FEE_SLOT = 0xd1e54fc46e96497529fdb4b5abbcd802754a86c33bab838d6ce7d6ec96497b88;
+    uint256 private constant PENDING_CURRENCY_SLOT = 0x2977767698129b4908fb9b19423b38883970765ad9aba8979e231f45612fa01e;
+    uint256 private constant PENDING_POOL_ID_SLOT = 0x133a216bd676e8f955ffab19625ed7338b8d768a478c1f19ae573da66791ad78;
+    uint256 private constant PENDING_ACTIVE_SLOT = 0x9f335ffcc512b8308a51f958d03ae1d48e958c73fa34515db9db2ad5fb42cb6d;
+    uint256 private constant MAX_AFTER_SWAP_RETURN_DELTA = uint256(uint128(type(int128).max));
 
     IFeeDistributor public feeDistributor;
     uint160 private lastSqrtPriceX96;
@@ -78,27 +85,30 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         onlyPoolManager
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        if (address(key.hooks) != address(this)) return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        if (address(key.hooks) != address(this)) {
+            return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        }
 
         // amountSpecified < 0  -> exact-input  (specified = input  / unspecified = output)
         // amountSpecified > 0  -> exact-output (specified = output / unspecified = input)
         // The afterSwap return-delta is applied to the UNSPECIFIED currency, so the
         // fee we charge in beforeSwap MUST be denominated in that same currency.
+        if (params.amountSpecified == type(int256).min) revert InvalidSwapAmount();
         bool exactInput = params.amountSpecified < 0;
         uint256 amountIn = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 fee = (amountIn * HOOK_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 fee = amountIn.mulDiv(HOOK_FEE_BPS, BPS_DENOMINATOR);
 
         if (lastSqrtPriceX96 != 0) {
             (uint160 currentSqrtPrice,,,) = poolManager.getSlot0(key.toId());
             uint256 delta = currentSqrtPrice > lastSqrtPriceX96
                 ? currentSqrtPrice - lastSqrtPriceX96
                 : lastSqrtPriceX96 - currentSqrtPrice;
-            if (delta * BPS_DENOMINATOR / lastSqrtPriceX96 >= VOLATILITY_THRESHOLD_BPS) {
-                fee = fee * VOLATILITY_FEE_MULTIPLIER / 100;
+            if (delta.mulDiv(BPS_DENOMINATOR, lastSqrtPriceX96) >= VOLATILITY_THRESHOLD_BPS) {
+                fee = fee.mulDiv(VOLATILITY_FEE_MULTIPLIER, 100);
             }
         }
 
-        uint256 feeCap = (amountIn * maxFeeBps) / BPS_DENOMINATOR;
+        uint256 feeCap = amountIn.mulDiv(maxFeeBps, BPS_DENOMINATOR);
         if (fee > feeCap) fee = feeCap;
 
         // Unspecified-currency selection (matches v4 afterSwapReturnDelta semantics):
@@ -109,10 +119,13 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         // i.e. unspecified is currency1 iff (zeroForOne == exactInput).
         Currency feeCurrency = (params.zeroForOne == exactInput) ? key.currency1 : key.currency0;
         uint256 currencyAsUint = uint256(uint160(Currency.unwrap(feeCurrency)));
+        bytes32 poolId = PoolId.unwrap(key.toId());
 
         assembly {
             tstore(PENDING_FEE_SLOT, fee)
             tstore(PENDING_CURRENCY_SLOT, currencyAsUint)
+            tstore(PENDING_POOL_ID_SLOT, poolId)
+            tstore(PENDING_ACTIVE_SLOT, 1)
         }
 
         totalSwaps++;
@@ -127,15 +140,32 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     {
         uint256 fee;
         uint256 rawCurrency;
+        uint256 active;
+        bytes32 pendingPoolId;
         assembly {
             fee := tload(PENDING_FEE_SLOT)
             rawCurrency := tload(PENDING_CURRENCY_SLOT)
+            pendingPoolId := tload(PENDING_POOL_ID_SLOT)
+            active := tload(PENDING_ACTIVE_SLOT)
             tstore(PENDING_FEE_SLOT, 0)
             tstore(PENDING_CURRENCY_SLOT, 0)
+            tstore(PENDING_POOL_ID_SLOT, 0)
+            tstore(PENDING_ACTIVE_SLOT, 0)
         }
+
+        if (active == 0) return (BaseHook.afterSwap.selector, 0);
+
+        bytes32 actualPoolId = PoolId.unwrap(key.toId());
+        if (pendingPoolId != actualPoolId) revert PendingSwapMismatch(pendingPoolId, actualPoolId);
+
         Currency feeCurrency = Currency.wrap(address(uint160(rawCurrency)));
 
-        if (fee == 0) return (BaseHook.afterSwap.selector, 0);
+        if (fee == 0) {
+            _refreshVolatilityReference(key);
+            return (BaseHook.afterSwap.selector, 0);
+        }
+
+        if (fee > MAX_AFTER_SWAP_RETURN_DELTA) revert HookFeeExceedsReturnDelta(fee);
 
         poolManager.take(feeCurrency, address(this), fee);
         feeCurrency.transfer(address(feeDistributor), fee);
@@ -145,17 +175,21 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         totalFeesRouted += fee;
         emit FeeRouted(Currency.unwrap(feeCurrency), fee, totalSwaps);
 
+        _refreshVolatilityReference(key);
+
+        return (BaseHook.afterSwap.selector, int128(uint128(fee)));
+    }
+
+    function _refreshVolatilityReference(PoolKey calldata key) internal {
         (uint160 sqrtAfter,,,) = poolManager.getSlot0(key.toId());
         // Only refresh the reference price at block boundaries.
         // Same-block sandwich: attacker's "reset" swap and "exploit" swap share the same block
-        // → lastSqrtPriceX96 does not update between them → exploit swap still sees the
-        // large inter-block price delta and pays the 1.5× volatility multiplier.
+        // -> lastSqrtPriceX96 does not update between them -> exploit swap still sees the
+        // large inter-block price delta and pays the 1.5x volatility multiplier.
         if (block.number > lastSwapBlock) {
             lastSqrtPriceX96 = sqrtAfter;
             lastSwapBlock = block.number;
         }
-
-        return (BaseHook.afterSwap.selector, int128(uint128(fee)));
     }
 
     function getSwapFeeInfo(uint256 amountIn)
@@ -163,14 +197,15 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         view
         returns (uint256 feeAmount, uint256 feeBps, uint256 treasuryBps, uint256 lpBonusBps, string memory description)
     {
-        feeAmount = (amountIn * HOOK_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 feeCap = (amountIn * maxFeeBps) / BPS_DENOMINATOR;
+        feeAmount = amountIn.mulDiv(HOOK_FEE_BPS, BPS_DENOMINATOR);
+        uint256 feeCap = amountIn.mulDiv(maxFeeBps, BPS_DENOMINATOR);
         if (feeAmount > feeCap) feeAmount = feeCap;
 
         feeBps = HOOK_FEE_BPS;
-        treasuryBps = 5;   // 20% of base 25 BPS
-        lpBonusBps = 20;   // 80% of base 25 BPS
-        description = "Base: 5 BPS treasury / 20 BPS LP; Volatile 1.5x: fee multiplied by 150% before 20/80 split -- capped at maxFeeBps";
+        treasuryBps = 5; // 20% of base 25 BPS
+        lpBonusBps = 20; // 80% of base 25 BPS
+        description =
+            "Base: 5 BPS treasury / 20 BPS LP; Volatile 1.5x: fee multiplied by 150% before 20/80 split -- capped at maxFeeBps";
     }
 
     /// @notice Returns the volatility oracle parameters that govern the 1.5x fee multiplier.
@@ -184,12 +219,7 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     function getVolatilityInfo()
         external
         view
-        returns (
-            uint256 thresholdBps,
-            uint256 multiplierPct,
-            uint160 referenceSqrtPriceX96,
-            uint256 referenceBlock
-        )
+        returns (uint256 thresholdBps, uint256 multiplierPct, uint160 referenceSqrtPriceX96, uint256 referenceBlock)
     {
         thresholdBps = VOLATILITY_THRESHOLD_BPS;
         multiplierPct = VOLATILITY_FEE_MULTIPLIER;

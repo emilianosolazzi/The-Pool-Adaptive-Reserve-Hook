@@ -13,6 +13,8 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
+    error InvalidDistributionCurrency(address currency);
+
     uint256 public constant SHARE_DENOMINATOR = 100;
     /// @notice Hard ceiling on the treasury cut (50% of distributions).
     uint256 public constant MAX_TREASURY_SHARE = 50;
@@ -21,7 +23,9 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
     uint256 public treasuryShare = 20;
 
     /// @notice Backwards-compatible read of LP share.
-    function lpShare() external view returns (uint256) { return SHARE_DENOMINATOR - treasuryShare; }
+    function lpShare() external view returns (uint256) {
+        return SHARE_DENOMINATOR - treasuryShare;
+    }
 
     IPoolManager public immutable poolManager;
     address public hook;
@@ -51,6 +55,10 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
         require(msg.sender == hook, "ONLY_HOOK");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
         require(amount > 0, "ZERO_AMOUNT");
+        address currencyAddr = Currency.unwrap(currency);
+        if (currencyAddr != Currency.unwrap(poolKey.currency0) && currencyAddr != Currency.unwrap(poolKey.currency1)) {
+            revert InvalidDistributionCurrency(currencyAddr);
+        }
 
         uint256 treasuryAmount = (amount * treasuryShare) / SHARE_DENOMINATOR;
         uint256 lpAmount = amount - treasuryAmount;
@@ -105,12 +113,11 @@ contract FeeDistributor is Ownable2Step, ReentrancyGuard {
         treasuryShare = _newShare;
     }
 
-    function getLPYieldSummary() external view returns (
-        uint256 lpBonusRate,
-        uint256 totalLPBonusPaid,
-        uint256 totalTreasuryPaid,
-        uint256 distributions
-    ) {
+    function getLPYieldSummary()
+        external
+        view
+        returns (uint256 lpBonusRate, uint256 totalLPBonusPaid, uint256 totalTreasuryPaid, uint256 distributions)
+    {
         return (SHARE_DENOMINATOR - treasuryShare, totalToLPs, totalToTreasury, distributionCount);
     }
 }

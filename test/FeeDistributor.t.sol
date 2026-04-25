@@ -74,11 +74,7 @@ contract FeeDistributorTest is Test {
     }
 
     function test_distribute_revertIfPoolKeyNotSet() public {
-        FeeDistributor fresh = new FeeDistributor(
-            IPoolManager(address(mockManager)),
-            treasury,
-            hookAddr
-        );
+        FeeDistributor fresh = new FeeDistributor(IPoolManager(address(mockManager)), treasury, hookAddr);
         MockERC20(Currency.unwrap(poolKey.currency0)).mint(address(fresh), 100);
 
         vm.prank(hookAddr);
@@ -90,6 +86,15 @@ contract FeeDistributorTest is Test {
         vm.prank(hookAddr);
         vm.expectRevert("ZERO_AMOUNT");
         distributor.distribute(poolKey.currency0, 0);
+    }
+
+    function test_distribute_revertOnNonPoolCurrency() public {
+        MockERC20 stray = new MockERC20("Stray", "STRAY", 18);
+        stray.mint(address(distributor), 1000);
+
+        vm.prank(hookAddr);
+        vm.expectRevert(abi.encodeWithSelector(FeeDistributor.InvalidDistributionCurrency.selector, address(stray)));
+        distributor.distribute(Currency.wrap(address(stray)), 1000);
     }
 
     function test_setHook_ownerOnly() public {
@@ -168,7 +173,7 @@ contract FeeDistributorTest is Test {
         address newOwner = makeAddr("newOwner");
         distributor.transferOwnership(newOwner);
 
-        assertEq(distributor.owner(),        address(this));
+        assertEq(distributor.owner(), address(this));
         assertEq(distributor.pendingOwner(), newOwner);
 
         vm.prank(newOwner);
@@ -184,13 +189,13 @@ contract FeeDistributorTest is Test {
         MockERC20(Currency.unwrap(feeCur)).mint(address(distributor), amount);
 
         uint256 treasuryBefore = MockERC20(Currency.unwrap(feeCur)).balanceOf(treasury);
-        uint256 lpsBefore      = distributor.totalToLPs();
+        uint256 lpsBefore = distributor.totalToLPs();
 
         vm.prank(hookAddr);
         distributor.distribute(feeCur, amount);
 
         uint256 treasuryGot = MockERC20(Currency.unwrap(feeCur)).balanceOf(treasury) - treasuryBefore;
-        uint256 lpsGot      = distributor.totalToLPs() - lpsBefore;
+        uint256 lpsGot = distributor.totalToLPs() - lpsBefore;
 
         assertEq(treasuryGot + lpsGot, amount);
     }
