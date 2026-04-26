@@ -35,7 +35,7 @@ import {HookMiner} from "../test/utils/HookMiner.sol";
 ///                          [default: TOKEN0]. Must equal TOKEN0 or TOKEN1.
 ///                          e.g. on Arbitrum WETH/USDC, WETH sorts below USDC,
 ///                          so set ASSET_TOKEN=TOKEN1 (USDC) for a USDC-deposit vault.
-///      PERFORMANCE_FEE_BPS Vault performance fee in basis points  [default: 500 = 5%]
+///      PERFORMANCE_FEE_BPS Vault performance fee in basis points  [default: 400 = 4%]
 ///      MAX_TVL             Vault deposit ceiling in asset-token units [default: 0 = unlimited]
 ///      MAX_FEE_BPS         Hook swap fee ceiling in basis points   [default: 50 = 0.5%]
 ///      POOL_FEE            Uniswap v4 pool fee tier (uint24)       [default: 100 = 0.01%]
@@ -64,7 +64,7 @@ contract Deploy is Script {
         require(token0Addr < token1Addr, "TOKEN0 must sort below TOKEN1 (Uniswap v4 requirement)");
 
         // ── Optional env vars ────────────────────────────────────────────────
-        uint256 perfFeeBps  = vm.envOr("PERFORMANCE_FEE_BPS", uint256(500));   // 5%
+        uint256 perfFeeBps  = vm.envOr("PERFORMANCE_FEE_BPS", uint256(400));   // 4%
         uint256 maxTVL      = vm.envOr("MAX_TVL",             uint256(0));      // unlimited
         uint256 maxFeeBps   = vm.envOr("MAX_FEE_BPS",         uint256(50));     // 0.5%
         uint24  poolFee     = uint24(vm.envOr("POOL_FEE",     uint256(100)));   // 0.01%

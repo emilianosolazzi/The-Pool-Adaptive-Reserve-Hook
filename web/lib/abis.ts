@@ -43,4 +43,49 @@ export const vaultAbi = [
   { type: 'function', name: 'maxTVL', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'performanceFeeBps', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'paused', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  // Pool key (set once after deployment)
+  { type: 'function', name: 'poolKey', stateMutability: 'view', inputs: [], outputs: [{ type: 'tuple', components: [
+    { name: 'currency0', type: 'address' },
+    { name: 'currency1', type: 'address' },
+    { name: 'fee', type: 'uint24' },
+    { name: 'tickSpacing', type: 'int24' },
+    { name: 'hooks', type: 'address' },
+  ] }] },
+] as const satisfies Abi;
+
+// Uniswap v4 PoolManager ABI for pool state queries
+export const poolManagerAbi = [
+  {
+    type: 'function',
+    name: 'getSlot0',
+    stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'protocolFee', type: 'uint24' },
+      { name: 'hookFee', type: 'uint24' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'getLiquidity',
+    stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [{ name: 'liquidity', type: 'uint128' }],
+  },
+  {
+    type: 'function',
+    name: 'getFeeGrowthGlobal0X128',
+    stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [{ name: 'feeGrowthGlobal0X128', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'getFeeGrowthGlobal1X128',
+    stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [{ name: 'feeGrowthGlobal1X128', type: 'uint256' }],
+  },
 ] as const satisfies Abi;

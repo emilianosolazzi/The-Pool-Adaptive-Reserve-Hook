@@ -2,10 +2,13 @@
 
 import { RainbowKitProvider, darkTheme, getDefaultConfig } from '@rainbow-me/rainbowkit';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { WagmiProvider } from 'wagmi';
+import { WagmiProvider, http } from 'wagmi';
 import { arbitrum, arbitrumSepolia } from 'wagmi/chains';
 
 const projectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
+const arbitrumRpcUrl = process.env.NEXT_PUBLIC_ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc';
+const arbitrumSepoliaRpcUrl =
+  process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
 
 if (!projectId) {
   throw new Error('NEXT_PUBLIC_WC_PROJECT_ID is required');
@@ -15,6 +18,10 @@ export const wagmiConfig = getDefaultConfig({
   appName: 'The Pool',
   projectId,
   chains: [arbitrum, arbitrumSepolia],
+  transports: {
+    [arbitrum.id]: http(arbitrumRpcUrl),
+    [arbitrumSepolia.id]: http(arbitrumSepoliaRpcUrl),
+  },
   ssr: true,
 });
 

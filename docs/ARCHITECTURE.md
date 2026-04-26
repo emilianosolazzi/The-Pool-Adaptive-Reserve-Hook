@@ -341,7 +341,7 @@ rebalance(newTickLower, newTickUpper) [onlyOwner, nonReentrant]
 `script/Deploy.s.sol` is a Foundry broadcast script that:
 
 1. Reads required env vars: `POOL_MANAGER`, `POS_MANAGER`, `TOKEN0`, `TOKEN1`, `TREASURY`.
-2. Reads optional env vars: `PERFORMANCE_FEE_BPS` (default 500 = 5%), `MAX_TVL` (default 0), `MAX_FEE_BPS` (default 50), `POOL_FEE` (default 100 = 0.01%), `TICK_SPACING` (default 1), `SQRT_PRICE_X96` (default 1:1), `OWNER` (default none), `TIMELOCK_DELAY` (default 2 days).
+2. Reads optional env vars: `PERFORMANCE_FEE_BPS` (default 400 = 4%), `MAX_TVL` (default 0), `MAX_FEE_BPS` (default 50), `POOL_FEE` (default 100 = 0.01%), `TICK_SPACING` (default 1), `SQRT_PRICE_X96` (default 1:1), `OWNER` (default none), `TIMELOCK_DELAY` (default 2 days).
 3. Pre-computes the `FeeDistributor` address (deployer nonce 0) so the hook constructor arg is known before deployment.
 4. Mines a CREATE2 salt for `DynamicFeeHook` via `HookMiner.find()` using the Foundry CREATE2 factory (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) so the hook address encodes the required permission bits (`BEFORE_SWAP | AFTER_SWAP | AFTER_SWAP_RETURNS_DELTA`).
 5. Deploys `FeeDistributor` → `LiquidityVault` (with canonical Permit2) → `DynamicFeeHook{salt}`.

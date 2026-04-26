@@ -1,4 +1,17 @@
-export function Hero({ pairSymbol }: { pairSymbol: string }) {
+export function Hero({ pairSymbol, swapUrl }: { pairSymbol: string; swapUrl?: string }) {
+  const externalIcon = (
+    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4">
+      <path
+        d="M6 4h6v6M12 4 4 12"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+
   return (
     <section className="relative overflow-hidden border-b border-white/5">
       <div className="absolute inset-0 bg-hero-mesh pointer-events-none" />
@@ -17,11 +30,25 @@ export function Hero({ pairSymbol }: { pairSymbol: string }) {
           <span className="gradient-text">+ a 6-month early-depositor bonus.</span>
         </h1>
         <p className="mt-5 max-w-2xl text-balance text-lg text-zinc-300/90">
-          First $100K TVL shares <strong className="text-white">50% of treasury swap fees</strong> for
-          6 months. Time-weighted, capped, paid in USDC.
+          Each hooked swap sends <strong className="text-white">80% back to pool LPs</strong> and{' '}
+          <strong className="text-white">20% to treasury</strong>. First $100K TVL then shares{' '}
+          <strong className="text-white">50% of that treasury stream</strong> for 6 months, time-weighted,
+          capped, and paid in USDC.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <a href="#vault" className="btn-primary">Deposit USDC — eligibility starts after 7 days</a>
+          {swapUrl ? (
+            <a
+              href={swapUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-ghost border-accent-500/20 bg-accent-500/10 text-accent-50 hover:border-accent-400/40 hover:bg-accent-500/15"
+            >
+              <span>Swap on Uniswap</span>
+              {externalIcon}
+              <span className="external-badge">External</span>
+            </a>
+          ) : null}
           <a
             href="https://github.com/emilianosolazzi/The-Pool/blob/main/docs/BOOTSTRAP.md"
             target="_blank"
@@ -34,6 +61,10 @@ export function Hero({ pairSymbol }: { pairSymbol: string }) {
             <span className="font-mono text-zinc-200">{pairSymbol}</span> · Arbitrum&nbsp;One
           </span>
         </div>
+        <p className="mt-4 max-w-3xl text-sm text-zinc-400">
+          This reference app is <span className="text-zinc-200">vault-only</span>: deposit, withdraw, and
+          live stats. Swaps happen <span className="text-zinc-200">on Uniswap</span>, not inside this repo.
+        </p>
         <p className="mt-6 max-w-3xl text-xs leading-relaxed text-zinc-500">
           Bonus is share-seconds-weighted, capped at $25K per wallet and $10K per monthly epoch.
           Transfers of vault shares forfeit unclaimed bonus. Program ends after 180 days or when
