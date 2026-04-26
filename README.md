@@ -43,6 +43,10 @@ Each swap triggers a 25 BPS hook fee. During periods of elevated volatility — 
 
 For a full description of state machines, data flows, and invariants, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+For detailed mathematical examples of yield generation and APY calculations, see [`docs/VALUE-EXAMPLES.md`](docs/VALUE-EXAMPLES.md).
+
+For code examples and integration snippets, see [`docs/CODE-EXAMPLES.md`](docs/CODE-EXAMPLES.md).
+
 ---
 
 ## Features
@@ -54,7 +58,7 @@ For a full description of state machines, data flows, and invariants, see [`docs
 
 **For the protocol**
 - **Dynamic fee capture** — 25 BPS base fee, scaling 1.5× in volatile conditions; revenue scales with market activity
-- **Performance fee** — owner-configurable treasury cut on harvested yield (0 – 20%, default 0)
+- **Performance fee** — owner-configurable treasury cut on harvested yield (0 – 20%, deploy default 4%)
 - **TVL cap** — optional ceiling on total deposits to manage controlled rollout
 
 **Security**
@@ -119,7 +123,7 @@ The vault is **single-sided out-of-range** by design: it holds one asset and ear
 Optional parameters with their defaults:
 
 ```bash
-PERFORMANCE_FEE_BPS=0      # Vault yield cut sent to treasury (0–2000 BPS)
+PERFORMANCE_FEE_BPS=400    # Vault yield cut sent to treasury (0–2000 BPS)
 MAX_TVL=0                  # Deposit ceiling in asset-token units; 0 = unlimited
 MAX_FEE_BPS=50             # Hook fee ceiling in BPS (hard cap, max 1000)
 POOL_FEE=100               # Uniswap pool fee tier
@@ -136,6 +140,19 @@ forge script script/Deploy.s.sol --broadcast --rpc-url $ARBITRUM_RPC_URL
 The deploy script mines a valid hook address (CREATE2 with permission bits), deploys all four contracts in dependency order, wires the circular references, initialises the pool, and registers the pool key on both the hook and the vault.
 
 **Target network: Arbitrum One.**
+
+### Live Arbitrum One deployment
+
+| Component | Address |
+|---|---|
+| FeeDistributor | `0x474F59AE4699743AcC8563e7833e2bE90e7426C3` |
+| LiquidityVault | `0x87F2db1A41A9227CBfBBC00A5AdE5770C85b3d71` |
+| DynamicFeeHook | `0x62076C1Cb0Ea57Acd2353fF45226a1FB1e6100c4` |
+| BootstrapRewards | `0x2f9Ba00A0AA3533874294c55144a30Bf6a7b7a63` |
+
+Bootstrap activation txs:
+- Deploy BootstrapRewards: `0xc2eaece0e89b2489b6ca4836935be14efc6d40d3e44ec72fe23363ed24a7b2e3`
+- Wire `FeeDistributor.treasury` to BootstrapRewards: `0xbcf1c27ecc1c63bef350e2d3eef98b0540d4495ea33254c6fd61eb07a2644722`
 
 ---
 

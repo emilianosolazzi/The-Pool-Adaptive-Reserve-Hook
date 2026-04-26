@@ -33,6 +33,12 @@ Build output is static + edge-compatible; well within the 100 GB / month free-ti
 
 Set the Vercel env vars and redeploy (or trigger a Deployment Hook). No code change needed.
 
+Current Arbitrum One values:
+
+- NEXT_PUBLIC_VAULT_ARB_ONE=0x87F2db1A41A9227CBfBBC00A5AdE5770C85b3d71
+- NEXT_PUBLIC_HOOK_ARB_ONE=0x62076C1Cb0Ea57Acd2353fF45226a1FB1e6100c4
+- NEXT_PUBLIC_DISTRIBUTOR_ARB_ONE=0x474F59AE4699743AcC8563e7833e2bE90e7426C3
+
 ## What's included
 
 - **Hero** + feature chips

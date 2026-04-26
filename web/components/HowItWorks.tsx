@@ -75,6 +75,7 @@ export function HowItWorks({ deployment, chainId }: { deployment: Deployment; ch
           {addrRow('LiquidityVault', deployment.vault)}
           {addrRow('DynamicFeeHook', deployment.hook)}
           {addrRow('FeeDistributor', deployment.distributor)}
+          {addrRow('BootstrapRewards', deployment.bootstrap)}
           {addrRow(`Asset (${deployment.assetSymbol})`, deployment.asset)}
         </div>
         <div className="card p-5 text-sm leading-relaxed text-zinc-400">

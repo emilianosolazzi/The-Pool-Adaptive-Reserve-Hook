@@ -1,6 +1,7 @@
 'use client';
 
-import { useReadContract, useReadContracts } from 'wagmi';
+import { useMemo } from 'react';
+import { useReadContract } from 'wagmi';
 import { vaultAbi } from '@/lib/abis';
 import { fmtCompact, fmtUnits } from '@/lib/format';
 import { type Deployment } from '@/lib/deployments';
@@ -15,26 +16,73 @@ export function StatsGrid({ deployment, chainId }: Props) {
   const vault = deployment.vault as Address | undefined;
   const enabled = Boolean(vault);
 
-  const { data, isLoading } = useReadContracts({
-    contracts: enabled
-      ? ([
-          { address: vault!, abi: vaultAbi, functionName: 'getVaultStats', chainId },
-          { address: vault!, abi: vaultAbi, functionName: 'totalSupply', chainId },
-          { address: vault!, abi: vaultAbi, functionName: 'tickLower', chainId },
-          { address: vault!, abi: vaultAbi, functionName: 'tickUpper', chainId },
-          { address: vault!, abi: vaultAbi, functionName: 'performanceFeeBps', chainId },
-        ] as const)
-      : [],
+  const {
+    data: rawStats,
+    isLoading: isStatsLoading,
+    isError: isStatsError,
+    error: statsError,
+  } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'getVaultStats',
+    chainId,
     query: { enabled, refetchInterval: 15_000 },
   });
 
-  const stats = data?.[0]?.result as
-    | readonly [bigint, bigint, bigint, bigint, bigint, string]
-    | undefined;
-  const totalSupply = data?.[1]?.result as bigint | undefined;
-  const tickLower = data?.[2]?.result as number | undefined;
-  const tickUpper = data?.[3]?.result as number | undefined;
-  const perfBps = data?.[4]?.result as bigint | undefined;
+  const { data: tickLower, isLoading: isTickLowerLoading } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'tickLower',
+    chainId,
+    query: { enabled, refetchInterval: 15_000 },
+  });
+
+  const { data: tickUpper, isLoading: isTickUpperLoading } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'tickUpper',
+    chainId,
+    query: { enabled, refetchInterval: 15_000 },
+  });
+
+  const { data: perfBps, isLoading: isPerfLoading } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'performanceFeeBps',
+    chainId,
+    query: { enabled, refetchInterval: 15_000 },
+  });
+
+  const stats = useMemo(() => {
+    if (!rawStats) return undefined;
+
+    if (Array.isArray(rawStats) && rawStats.length >= 6) {
+      return rawStats as readonly [bigint, bigint, bigint, bigint, bigint, string];
+    }
+
+    const obj = rawStats as unknown as Partial<Record<string, unknown>>;
+    if (
+      typeof obj.tvl === 'bigint' &&
+      typeof obj.sharePrice === 'bigint' &&
+      typeof obj.depositors === 'bigint' &&
+      typeof obj.liqDeployed === 'bigint' &&
+      typeof obj.yieldColl === 'bigint' &&
+      typeof obj.feeDesc === 'string'
+    ) {
+      return [
+        obj.tvl,
+        obj.sharePrice,
+        obj.depositors,
+        obj.liqDeployed,
+        obj.yieldColl,
+        obj.feeDesc,
+      ] as const;
+    }
+
+    return undefined;
+  }, [rawStats]);
+
+  const isLoading = isStatsLoading || isTickLowerLoading || isTickUpperLoading || isPerfLoading;
 
   const cards = [
     {
@@ -90,6 +138,11 @@ export function StatsGrid({ deployment, chainId }: Props) {
       {stats?.[5] && (
         <p className="mt-4 text-center text-xs text-zinc-500 font-mono">
           {stats[5]}
+        </p>
+      )}
+      {isStatsError && (
+        <p className="mt-2 text-center text-xs text-amber-400">
+          Could not read live vault stats from RPC. {statsError?.message}
         </p>
       )}
     </div>

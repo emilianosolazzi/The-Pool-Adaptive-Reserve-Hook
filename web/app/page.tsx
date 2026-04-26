@@ -23,7 +23,7 @@ export default function HomePage() {
     <>
       <Nav />
       <main>
-        <Hero pairSymbol={deployment.pairSymbol} />
+        <Hero pairSymbol={deployment.pairSymbol} swapUrl={deployment.swapUrl} />
 
         <PlainEnglish deployment={deployment} />
 
