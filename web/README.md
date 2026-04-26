@@ -11,28 +11,6 @@ cp .env.example .env.local
 npm install
 npm run dev
 ```
-
-Open http://localhost:3000.
-
-The app reads on-chain state from Arbitrum One (and Sepolia). If `NEXT_PUBLIC_VAULT_ARB_ONE` is empty, stats render a graceful "not deployed" state so you can ship the UI before contracts go live.
-
-## Deploy to Vercel (free tier)
-
-1. Push the repo to GitHub (already done).
-2. On [vercel.com](https://vercel.com) → **New Project** → import `emilianosolazzi/The-Pool`.
-3. **Root Directory**: `web`.
-4. Framework preset auto-detects **Next.js**. Leave defaults.
-5. Add environment variables from [`.env.example`](.env.example):
-   - `NEXT_PUBLIC_WC_PROJECT_ID` — get a free one at [cloud.reown.com](https://cloud.reown.com).
-   - `NEXT_PUBLIC_VAULT_ARB_ONE`, `NEXT_PUBLIC_HOOK_ARB_ONE`, `NEXT_PUBLIC_DISTRIBUTOR_ARB_ONE` — fill after `forge script script/Deploy.s.sol` completes.
-6. Deploy.
-
-Build output is static + edge-compatible; well within the 100 GB / month free-tier bandwidth.
-
-## Updating contract addresses
-
-Set the Vercel env vars and redeploy (or trigger a Deployment Hook). No code change needed.
-
 Current Arbitrum One values:
 
 - NEXT_PUBLIC_VAULT_ARB_ONE=0x87F2db1A41A9227CBfBBC00A5AdE5770C85b3d71
