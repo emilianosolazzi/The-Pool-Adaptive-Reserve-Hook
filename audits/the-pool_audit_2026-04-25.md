@@ -358,4 +358,4 @@ internally or expose a parameter.
 5. **L-\* / INFO** — robustness, UX, documentation.
 
 H-1 and H-2 are real value-loss paths under normal usage, not just adversarial
-edge cases. They should be fixed before any mainnet deployment.
+edge cases. They should be fixed before any mainnet deployment. # Fixed
