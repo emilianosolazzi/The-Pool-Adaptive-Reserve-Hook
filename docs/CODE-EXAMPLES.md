@@ -1,27 +1,30 @@
 # Value Calculator Code Examples (Contract-Accurate)
 
+For user-facing estimates, `feeBasisAmount` may be approximated with swap notional.
+For contract-accurate accounting, it is the absolute value of the swap's unspecified-currency delta in `DynamicFeeHookV2.afterSwap`.
+
 ## JavaScript / TypeScript
 
 ### 1) Hook Fee With Volatility + Cap
 
 ```ts
 type HookFeeInput = {
-  amountIn: number;
+  feeBasisAmount: bigint; // abs unspecified-currency delta, token units
   isVolatile: boolean;
-  hookFeeBps?: number;   // DynamicFeeHook.HOOK_FEE_BPS (default 25)
-  maxFeeBps?: number;    // DynamicFeeHook.maxFeeBps (default 50)
+  hookFeeBps?: bigint;   // DynamicFeeHookV2.HOOK_FEE_BPS (default 25)
+  maxFeeBps?: bigint;    // DynamicFeeHookV2.maxFeeBps (default 50)
 };
 
 export function computeHookFee({
-  amountIn,
+  feeBasisAmount,
   isVolatile,
-  hookFeeBps = 25,
-  maxFeeBps = 50,
-}: HookFeeInput) {
-  const base = (amountIn * hookFeeBps) / 10_000;
-  const withVol = isVolatile ? (base * 150) / 100 : base;
-  const cap = (amountIn * maxFeeBps) / 10_000;
-  return Math.min(withVol, cap);
+  hookFeeBps = 25n,
+  maxFeeBps = 50n,
+}: HookFeeInput): bigint {
+  const base = (feeBasisAmount * hookFeeBps) / 10_000n;
+  const withVol = isVolatile ? (base * 150n) / 100n : base;
+  const cap = (feeBasisAmount * maxFeeBps) / 10_000n;
+  return withVol < cap ? withVol : cap;
 }
 ```
 
@@ -42,10 +45,12 @@ type VaultCaptureInput = {
   lpDonation: number;      // from FeeDistributor (hook fee path)
   poolFeeAmount: number;   // native pool fee path
   vaultLiquidityShare: number; // phi in [0, 1]
-  performanceFeeBps: number;   // LiquidityVault.performanceFeeBps
+  performanceFeeBps: number;   // LiquidityVaultV2.performanceFeeBps
 };
 
 export function estimateVaultNetAssetYield(input: VaultCaptureInput) {
+  // Assumes the captured yield is realized in the vault asset.
+  // Non-asset yield is tracked separately by LiquidityVaultV2.
   const gross = input.vaultLiquidityShare * (input.lpDonation + input.poolFeeAmount);
   const net = gross * (1 - input.performanceFeeBps / 10_000);
   return { gross, net };
@@ -54,7 +59,7 @@ export function estimateVaultNetAssetYield(input: VaultCaptureInput) {
 
 ### 4) Contract-Style Annualized Rate (APR, Not Compounded APY)
 
-Matches `LiquidityVault.getProjectedAPY` math:
+`LiquidityVaultV2` does not expose an on-chain APR/APY projection helper; this is an analytics-side linear APR proxy:
 
 ```ts
 export function projectedAprBps(recentYield: number, windowSeconds: number, totalAssets: number) {
@@ -76,9 +81,9 @@ export function compoundedApyFromDailyRate(dailyRate: number) {
 ### 1) Hook Fee Path
 
 ```solidity
-uint256 fee = amountIn * 25 / 10_000;
+uint256 fee = absUnspec * 25 / 10_000;
 if (isVolatile) fee = fee * 150 / 100;
-uint256 cap = amountIn * maxFeeBps / 10_000;
+uint256 cap = absUnspec * maxFeeBps / 10_000;
 if (fee > cap) fee = cap;
 ```
 

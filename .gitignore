@@ -5,3 +5,7 @@ broadcast/
 
 .vercel
 .env*.local
+
+# Local AI/agent working notes — not for the public repo
+.copilot/
+

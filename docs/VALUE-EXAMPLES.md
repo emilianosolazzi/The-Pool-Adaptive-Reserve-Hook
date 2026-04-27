@@ -1,23 +1,26 @@
 # Value Math Examples (Contract-Accurate)
 
-This page aligns example math with the actual Solidity logic in `DynamicFeeHook`, `FeeDistributor`, `LiquidityVault`, and `BootstrapRewards`.
+This page aligns example math with the current Solidity logic in `DynamicFeeHookV2`, `FeeDistributor`, `LiquidityVaultV2`, and `BootstrapRewards`.
 
-## 1) Per-Swap Hook Fee (DynamicFeeHook)
+## 1) Per-Swap Hook Fee (DynamicFeeHookV2)
 
 Contract constants:
-- Base hook fee: `HOOK_FEE_BPS = 25` (0.25%)
+- Base hook fee: `HOOK_FEE_BPS = 25` (25 bps = 0.25%)
 - Volatility multiplier: `VOLATILITY_FEE_MULTIPLIER = 150` (1.5x)
-- Fee cap: `maxFeeBps` (default 50 bps, owner-adjustable)
+- Fee cap: `maxFeeBps` (default 50 bps, owner-adjustable, hard-capped at 1000 bps)
 
 Formula per swap:
 
 ```
-rawHookFee = amountIn * 25 / 10_000
+rawHookFee = absUnspecifiedDelta * 25 / 10_000
 volatileHookFee = rawHookFee * 150 / 100   (only if volatility threshold is met)
-hookFee = min(volatileHookFee or rawHookFee, amountIn * maxFeeBps / 10_000)
+hookFee = min(volatileHookFee or rawHookFee, absUnspecifiedDelta * maxFeeBps / 10_000)
 ```
 
 Notes:
+- The hook fee is computed on the absolute value of the swap's unspecified-currency delta.
+- For simple dollar-denominated examples below, `absUnspecifiedDelta` is approximated as swap notional.
+- In real swaps, the fee currency is the unspecified currency selected by v4 swap semantics.
 - The volatility multiplier applies to the hook fee only.
 - Pool LP fee is separate from the hook fee and is not multiplied by the hook volatility factor.
 
@@ -39,8 +42,9 @@ Important:
 The vault does not receive 100% of `lpDonation`.
 
 Let:
-- `phi` = vault share of active in-range liquidity at donation time (0 to 1)
+- `phi` = vault share of active in-range liquidity at donation/fee accrual time (0 to 1)
 - `poolFeeAmount` = fees from the underlying pool fee tier
+- `lpDonation` = hook-fee portion donated back into the pool
 
 Then expected gross vault fee flow in asset terms is:
 
@@ -48,14 +52,16 @@ Then expected gross vault fee flow in asset terms is:
 vaultGross ~= phi * lpDonation + phi * poolFeeAmount
 ```
 
+If the vault is out of range, its active-liquidity share may be zero, so fee capture may also be zero until it re-enters range or rebalances.
+
 Then the vault performance fee is applied when yield is collected in asset token:
 
 ```
 vaultNetAssetYield = vaultGrossAssetPart * (1 - performanceFeeBps/10_000)
 ```
 
-`LiquidityVault.totalYieldCollected` tracks net asset-token yield after performance fee.
-Non-asset-token yield is tracked separately in `currency1YieldCollected`.
+`LiquidityVaultV2.totalYieldCollected` tracks net asset-token yield after performance fee.
+Non-asset-token yield is tracked separately in `otherTokenYieldCollected`.
 
 ## 4) Worked Per-Swap Example
 
@@ -99,6 +105,8 @@ Assume:
 - `performanceFeeBps = 400` (4%)
 - Vault TVL = $10,000,000
 
+For simplicity, this example assumes the vault is in range (`phi = 1%`) and all collected yield is realized in the vault asset when performance fees are applied.
+
 Step-by-step:
 
 ```
@@ -110,13 +118,15 @@ vaultGrossDaily    ~= phi * (lpDonationDaily + poolFeesDaily)
 				  ~= 1% * (2,200,000 + 500,000)
 				  = 27,000
 
+if all yield is asset-denominated:
 vaultNetDaily      = 27,000 * (1 - 4%) = 25,920
 dailyYieldRate     = 25,920 / 10,000,000 = 0.2592%
 ```
 
 ## 6) APR vs APY (matches contract semantics)
 
-`LiquidityVault.getProjectedAPY(recentYield, windowSeconds)` actually returns linear annualized rate in bps:
+`LiquidityVaultV2` does not expose an on-chain APR/APY projection helper.
+For analytics, a common linear APR proxy is:
 
 ```
 aprBps = (recentYield * 365 days / windowSeconds) * 10_000 / totalAssets
@@ -134,7 +144,7 @@ If you choose to model external daily compounding, APY would be:
 APY = (1 + 0.002592)^365 - 1 ~= 158.0%
 ```
 
-This compounding APY is an analytical projection, not what `getProjectedAPY` returns.
+This compounding APY is an analytical projection for dashboards, not an on-chain return value.
 
 ## 7) BootstrapRewards Math (Optional Layer)
 
