@@ -16,6 +16,9 @@ import { maxUint256, parseUnits, type Address } from 'viem';
 
 type Tab = 'deposit' | 'withdraw';
 
+const WITHDRAW_BUFFER_BPS = 500n;
+const BPS_DENOMINATOR = 10_000n;
+
 export function VaultCard({ deployment, chainId }: { deployment: Deployment; chainId: number }) {
   const { address } = useAccount();
   const [tab, setTab] = useState<Tab>('deposit');
@@ -55,15 +58,6 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
 
   const shareDecimals = rawShareDecimals as number | undefined;
 
-  const { data: redeemablePreview } = useReadContract({
-    address: vault,
-    abi: vaultAbi,
-    functionName: 'previewRedeem',
-    args: shares !== undefined ? [shares] : undefined,
-    chainId,
-    query: { enabled: Boolean(vault && shares && shares > 0n), refetchInterval: 15_000 },
-  });
-
   const parsed = useMemo(() => {
     if (!amount) return 0n;
     try {
@@ -77,8 +71,35 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
     }
   }, [amount, dec, shareDecimals, tab]);
 
+  const conservativeMaxShares = useMemo(() => {
+    if (shares === undefined || shares <= 0n) return 0n;
+    const buffered = shares * (BPS_DENOMINATOR - WITHDRAW_BUFFER_BPS) / BPS_DENOMINATOR;
+    return buffered > 0n ? buffered : shares;
+  }, [shares]);
+
+  const { data: conservativeRedeemPreview } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'previewRedeem',
+    args: conservativeMaxShares > 0n ? [conservativeMaxShares] : undefined,
+    chainId,
+    query: { enabled: Boolean(vault && conservativeMaxShares > 0n), refetchInterval: 15_000 },
+  });
+
+  const { data: inputRedeemPreview } = useReadContract({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'previewRedeem',
+    args: tab === 'withdraw' && parsed > 0n ? [parsed] : undefined,
+    chainId,
+    query: { enabled: Boolean(vault && tab === 'withdraw' && parsed > 0n), refetchInterval: 15_000 },
+  });
+
   const needsApproval =
     tab === 'deposit' && parsed > 0n && (allowance ?? 0n) < parsed;
+
+  const exceedsConservativeWithdraw =
+    tab === 'withdraw' && conservativeMaxShares > 0n && parsed > conservativeMaxShares;
 
   const { writeContract, data: txHash, isPending, reset } = useWriteContract();
   const { isLoading: isMining, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
@@ -124,8 +145,8 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
   const onMax = () => {
     if (tab === 'deposit' && assetBalance !== undefined) {
       setAmount(fmtUnits(assetBalance, dec, dec));
-    } else if (tab === 'withdraw' && shares !== undefined && shareDecimals !== undefined) {
-      setAmount(fmtUnits(shares, shareDecimals, shareDecimals));
+    } else if (tab === 'withdraw' && conservativeMaxShares > 0n && shareDecimals !== undefined) {
+      setAmount(fmtUnits(conservativeMaxShares, shareDecimals, shareDecimals));
     }
   };
 
@@ -137,7 +158,8 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
     isMining ||
     (tab === 'withdraw' && shareDecimals === undefined) ||
     (tab === 'deposit' && assetBalance !== undefined && parsed > assetBalance) ||
-    (tab === 'withdraw' && shares !== undefined && parsed > shares);
+    (tab === 'withdraw' && shares !== undefined && parsed > shares) ||
+    exceedsConservativeWithdraw;
 
   return (
     <div className="card shadow-glow">
@@ -204,9 +226,22 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
           </div>
 
           {tab === 'withdraw' && shares !== undefined && shares > 0n && (
-            <div className="rounded-lg border border-white/5 bg-ink-800/40 px-3 py-2 text-xs text-zinc-400">
-              Redeem all → ~{fmtUnits(redeemablePreview as bigint | undefined, dec, 4)}{' '}
-              {deployment.assetSymbol}
+            <div className="space-y-1 rounded-lg border border-white/5 bg-ink-800/40 px-3 py-2 text-xs text-zinc-400">
+              <div>
+                Conservative max -&gt; ~{fmtUnits(conservativeRedeemPreview as bigint | undefined, dec, 4)}{' '}
+                {deployment.assetSymbol}
+              </div>
+              {parsed > 0n && (
+                <div>
+                  This redeem -&gt; ~{fmtUnits(inputRedeemPreview as bigint | undefined, dec, 4)}{' '}
+                  {deployment.assetSymbol}
+                </div>
+              )}
+              {exceedsConservativeWithdraw && (
+                <div className="text-amber-300">
+                  Use MAX to leave a 5% execution buffer.
+                </div>
+              )}
             </div>
           )}
 
