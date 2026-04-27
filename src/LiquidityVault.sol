@@ -278,11 +278,19 @@ contract LiquidityVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             }
         }
 
+        // Out-of-range single-sided liquidity: use the full range (lower, upper)
+        // to size L for the asset balance. Using the live `sqrtPriceX96` here
+        // (instead of the boundary it crosses) under-deploys L by orders of
+        // magnitude and was the root cause of liqDeployed = 75 wei in
+        // production. See v4-core LiquidityAmounts.sol — the canonical formula
+        // takes (sqrtA, sqrtB, amount) for both single-sided cases.
         uint128 liquidity;
         if (assetIsToken0) {
-            liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceX96, sqrtPriceUpper, amount);
+            // Price is below the range: position is 100% token0. Use [lower, upper].
+            liquidity = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceLower, sqrtPriceUpper, amount);
         } else {
-            liquidity = LiquidityAmounts.getLiquidityForAmount1(sqrtPriceLower, sqrtPriceX96, amount);
+            // Price is above the range: position is 100% token1. Use [lower, upper].
+            liquidity = LiquidityAmounts.getLiquidityForAmount1(sqrtPriceLower, sqrtPriceUpper, amount);
         }
 
         if (positionTokenId == 0) {

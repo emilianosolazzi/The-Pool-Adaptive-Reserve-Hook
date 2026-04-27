@@ -90,12 +90,15 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
   //   WETH -> USDC means input=currency0 -> output=currency1  => zeroForOne=true
   const zeroForOne = !inputIsUSDC;
 
+  // Pool params must match the deployed pool key. The redeployed pool uses
+  // tickSpacing=60 (a fresh PoolKey distinct from the v3-style 0.05% pool that
+  // shares fee=500 / tickSpacing=10 on the same token pair).
   const poolKey = useMemo(
     () => ({
       currency0: weth ?? ZERO,
       currency1: usdc ?? ZERO,
       fee: 500,
-      tickSpacing: 10,
+      tickSpacing: 60,
       hooks: hook ?? ZERO,
     }),
     [weth, usdc, hook],
