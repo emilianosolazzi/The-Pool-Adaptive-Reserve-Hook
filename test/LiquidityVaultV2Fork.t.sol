@@ -99,7 +99,7 @@ contract LiquidityVaultV2ForkTest is Test {
 
         vm.startPrank(alice);
         IERC20(USDC).approve(address(vault), type(uint256).max);
-        uint256 shares = vault.depositWithZap(depositAmount, alice, swapAmount, 1, 1, block.timestamp + 300);
+        uint256 shares = vault.depositWithZap(depositAmount, alice, swapAmount, 1, 1, 0, block.timestamp + 300);
         vm.stopPrank();
 
         assertGt(shares, 0, "shares minted");
@@ -119,7 +119,7 @@ contract LiquidityVaultV2ForkTest is Test {
 
         vm.startPrank(alice);
         IERC20(USDC).approve(address(vault), type(uint256).max);
-        vault.depositWithZap(depositAmount, alice, swapAmount, 1, 1, block.timestamp + 300);
+        vault.depositWithZap(depositAmount, alice, swapAmount, 1, 1, 0, block.timestamp + 300);
 
         uint256 usdcBefore = IERC20(USDC).balanceOf(alice);
         uint256 sharesBurned = vault.withdrawWithZap(

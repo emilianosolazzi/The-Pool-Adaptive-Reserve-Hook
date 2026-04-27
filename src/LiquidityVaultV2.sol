@@ -23,6 +23,18 @@ import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import {IZapRouter} from "./interfaces/IZapRouter.sol";
 
+interface IReserveHook {
+    function createReserveOffer(
+        PoolKey calldata key,
+        Currency sellCurrency,
+        uint128 sellAmount,
+        uint160 vaultSqrtPriceX96,
+        uint64 expiry
+    ) external;
+    function cancelReserveOffer(PoolKey calldata key) external returns (uint128);
+    function claimReserveProceeds(Currency currency) external returns (uint256);
+}
+
 /// @notice ERC-4626 USDC-entry vault that can zap into active dual-token v4 liquidity.
 /// @dev    External swaps go through a narrow zap-router adapter. The vault
 ///         never accepts arbitrary router calldata.
@@ -58,6 +70,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public removeLiquiditySlippageBps = 50;
     uint256 public txDeadlineSeconds = 300;
     address public zapRouter;
+    address public reserveHook;
 
     enum VaultStatus {
         UNCONFIGURED,
@@ -82,6 +95,10 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     event ZapExecuted(address indexed tokenIn, address indexed tokenOut, uint256 amountInMax, uint256 amountOut);
     event ZapDeposit(address indexed caller, address indexed receiver, uint256 assets, uint256 swappedAssets, uint256 shares);
     event ZapWithdraw(address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+    event ReserveHookUpdated(address indexed oldHook, address indexed newHook);
+    event ReserveOfferEscrowed(address indexed sellCurrency, uint128 sellAmount, uint160 vaultSqrtPriceX96, uint64 expiry);
+    event ReserveOfferReturned(address indexed sellCurrency, uint128 returned);
+    event ReserveProceedsCollected(address indexed currency, uint256 amount);
 
     constructor(
         IERC20 _asset,
@@ -187,22 +204,31 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         return shares;
     }
 
+    /// @notice Fair-zap deposit: shares are minted from the NAV delta produced
+    ///         after the zap-and-LP is realised, not from the gross `assets`
+    ///         the caller supplied. This prevents existing depositors from
+    ///         eating the new depositor's swap cost / slippage.
+    /// @param  minSharesOut user-side guard against unexpectedly low share mint
+    ///         (e.g. severe zap slippage). Set to 0 to opt out.
     function depositWithZap(
         uint256 assets,
         address receiver,
         uint256 assetsToSwap,
         uint256 minOtherOut,
         uint256 minLiquidity,
+        uint256 minSharesOut,
         uint256 deadline
     ) external nonReentrant whenNotPaused returns (uint256 shares) {
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
         require(assetsToSwap <= assets, "SWAP_TOO_LARGE");
         if (maxTVL > 0) require(totalAssets() + assets <= maxTVL, "TVL_CAP");
-        if (balanceOf(receiver) == 0) totalDepositors++;
 
-        shares = previewDeposit(assets);
-        _deposit(msg.sender, receiver, assets, shares);
+        // Snapshot BEFORE pulling assets so existing-LP NAV is the baseline.
+        uint256 totalBefore = totalAssets();
+        uint256 supplyBefore = totalSupply();
+
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
 
         if (assetsToSwap > 0) {
             _executeZap(asset(), assetsToSwap, _otherToken(), minOtherOut, deadline);
@@ -210,6 +236,29 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
         uint128 liquidity = _deployBalancedLiquidity(minLiquidity);
         require(liquidity >= minLiquidity, "MIN_LIQUIDITY");
+
+        uint256 totalAfter = totalAssets();
+        uint256 netAdded = totalAfter > totalBefore ? totalAfter - totalBefore : 0;
+        require(netAdded > 0, "NO_NET_VALUE_ADDED");
+
+        // ERC-4626 virtual-share formula, with `netAdded` standing in for `assets`
+        // and the pre-deposit NAV used as the denominator.
+        if (supplyBefore == 0) {
+            shares = netAdded * (10 ** _decimalsOffset());
+        } else {
+            shares = netAdded.mulDiv(
+                supplyBefore + 10 ** _decimalsOffset(),
+                totalBefore + 1,
+                Math.Rounding.Floor
+            );
+        }
+        require(shares >= minSharesOut, "MIN_SHARES_OUT");
+        require(shares > 0, "ZERO_SHARES");
+
+        if (balanceOf(receiver) == 0) totalDepositors++;
+        _mint(receiver, shares);
+
+        emit Deposit(msg.sender, receiver, assets, shares);
         emit ZapDeposit(msg.sender, receiver, assets, assetsToSwap, shares);
     }
 
@@ -498,6 +547,49 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         require(newRouter == address(0) || newRouter.code.length > 0, "NOT_CONTRACT");
         emit ZapRouterUpdated(zapRouter, newRouter);
         zapRouter = newRouter;
+    }
+
+    /// @notice Bind the reserve-sale hook (must equal poolKey.hooks for offers to fire).
+    function setReserveHook(address newHook) external onlyOwner {
+        require(newHook == address(0) || newHook.code.length > 0, "NOT_CONTRACT");
+        emit ReserveHookUpdated(reserveHook, newHook);
+        reserveHook = newHook;
+    }
+
+    /// @notice Escrow vault inventory at the hook as a reserve offer.
+    /// @param  sellCurrency must be one of the pool currencies.
+    /// @param  sellAmount inventory to lock at the hook (vault must hold it).
+    /// @param  vaultSqrtPriceX96 vault's chosen sale sqrt-price.
+    /// @param  expiry unix seconds; 0 disables expiry.
+    function offerReserveToHook(
+        Currency sellCurrency,
+        uint128 sellAmount,
+        uint160 vaultSqrtPriceX96,
+        uint64 expiry
+    ) external onlyOwner nonReentrant {
+        require(_poolKeySet, "POOL_KEY_NOT_SET");
+        require(reserveHook != address(0), "HOOK_NOT_SET");
+        require(sellAmount > 0, "ZERO_AMOUNT");
+        IERC20 tok = IERC20(Currency.unwrap(sellCurrency));
+        tok.forceApprove(reserveHook, 0);
+        tok.forceApprove(reserveHook, sellAmount);
+        IReserveHook(reserveHook).createReserveOffer(poolKey, sellCurrency, sellAmount, vaultSqrtPriceX96, expiry);
+        tok.forceApprove(reserveHook, 0);
+        emit ReserveOfferEscrowed(Currency.unwrap(sellCurrency), sellAmount, vaultSqrtPriceX96, expiry);
+    }
+
+    /// @notice Cancel the active reserve offer; remaining inventory returns to vault.
+    function cancelReserveOffer(Currency sellCurrency) external onlyOwner nonReentrant returns (uint128 returned) {
+        require(reserveHook != address(0), "HOOK_NOT_SET");
+        returned = IReserveHook(reserveHook).cancelReserveOffer(poolKey);
+        emit ReserveOfferReturned(Currency.unwrap(sellCurrency), returned);
+    }
+
+    /// @notice Pull accumulated proceeds (in `currency`) from the hook back into the vault.
+    function collectReserveProceeds(Currency currency) external nonReentrant returns (uint256 amount) {
+        require(reserveHook != address(0), "HOOK_NOT_SET");
+        amount = IReserveHook(reserveHook).claimReserveProceeds(currency);
+        if (amount > 0) emit ReserveProceedsCollected(Currency.unwrap(currency), amount);
     }
 
     function setTreasury(address newTreasury) external onlyOwner {

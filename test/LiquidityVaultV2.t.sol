@@ -89,7 +89,7 @@ contract LiquidityVaultV2Test is Test {
 
         vm.startPrank(alice);
         usdc.approve(address(vault), type(uint256).max);
-        uint256 shares = vault.depositWithZap(100e6, alice, 50e6, 1 ether, 1, block.timestamp + 1);
+        uint256 shares = vault.depositWithZap(100e6, alice, 50e6, 1 ether, 1, 0, block.timestamp + 1);
         vm.stopPrank();
 
         assertGt(shares, 0);
@@ -107,7 +107,7 @@ contract LiquidityVaultV2Test is Test {
         vm.startPrank(alice);
         usdc.approve(address(vault), type(uint256).max);
         vm.expectRevert("MOCK_MIN_OUT");
-        vault.depositWithZap(100e6, alice, 50e6, 1 ether, 1, block.timestamp + 1);
+        vault.depositWithZap(100e6, alice, 50e6, 1 ether, 1, 0, block.timestamp + 1);
         vm.stopPrank();
     }
 
@@ -118,7 +118,33 @@ contract LiquidityVaultV2Test is Test {
         vm.startPrank(alice);
         usdc.approve(address(vault), type(uint256).max);
         vm.expectRevert("ZAP_ROUTER_NOT_SET");
-        vault.depositWithZap(100e6, alice, 50e6, 1, 1, block.timestamp + 1);
+        vault.depositWithZap(100e6, alice, 50e6, 1, 1, 0, block.timestamp + 1);
         vm.stopPrank();
+    }
+
+    function test_depositWithZap_revertsWhenSharesBelowMinimum() public {
+        usdc.mint(alice, 100e6);
+        weth.mint(address(zapRouter), 1 ether);
+        zapRouter.setAmountOut(1 ether);
+
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        // Mint produces a finite share amount; require a wildly high minimum
+        // so the post-zap fair-share calc cannot satisfy it -> MIN_SHARES_OUT.
+        vm.expectRevert("MIN_SHARES_OUT");
+        vault.depositWithZap(100e6, alice, 50e6, 1 ether, 1, type(uint256).max, block.timestamp + 1);
+        vm.stopPrank();
+    }
+
+    function test_setReserveHook_setsAddress() public {
+        address hookStub = address(new MockPoolManager()); // any contract is fine for code-length check
+        vault.setReserveHook(hookStub);
+        assertEq(vault.reserveHook(), hookStub);
+    }
+
+    function test_offerReserveToHook_revertsWhenHookNotSet() public {
+        weth.mint(address(vault), 1 ether);
+        vm.expectRevert("HOOK_NOT_SET");
+        vault.offerReserveToHook(Currency.wrap(address(weth)), uint128(1 ether), uint160(1 << 96), 0);
     }
 }
