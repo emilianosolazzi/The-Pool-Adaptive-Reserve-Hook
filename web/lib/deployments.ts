@@ -62,3 +62,25 @@ export const DEPLOYMENTS: Record<AppChainId, Deployment> = {
 
 export const getDeployment = (chainId: AppChainId): Deployment =>
   DEPLOYMENTS[chainId] ?? DEPLOYMENTS[DEFAULT_CHAIN_ID];
+
+// ── Swap infrastructure ──────────────────────────────────────────────────────
+// Universal Router (v4-aware) and V4Quoter, per chain. Permit2 is canonical.
+export const PERMIT2: Address = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+
+export interface SwapInfra {
+  universalRouter: Address;
+  v4Quoter: Address;
+  weth: Address;
+}
+
+export const SWAP_INFRA: Record<AppChainId, SwapInfra | undefined> = {
+  [arbitrum.id]: {
+    universalRouter: '0xa51afafe0263b40edaef0df8781ea9aa03e381a3',
+    v4Quoter: '0x3972c00f7ed4885e145823eb7c655375d275a1c5',
+    weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+  },
+  [arbitrumSepolia.id]: undefined,
+};
+
+export const getSwapInfra = (chainId: AppChainId): SwapInfra | undefined =>
+  SWAP_INFRA[chainId];

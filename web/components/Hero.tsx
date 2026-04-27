@@ -1,17 +1,4 @@
-export function Hero({ pairSymbol, swapUrl }: { pairSymbol: string; swapUrl?: string }) {
-  const externalIcon = (
-    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4">
-      <path
-        d="M6 4h6v6M12 4 4 12"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.5"
-      />
-    </svg>
-  );
-
+export function Hero({ pairSymbol }: { pairSymbol: string; swapUrl?: string }) {
   return (
     <section className="relative overflow-hidden border-b border-white/5">
       <div className="absolute inset-0 bg-hero-mesh pointer-events-none" />
@@ -37,18 +24,12 @@ export function Hero({ pairSymbol, swapUrl }: { pairSymbol: string; swapUrl?: st
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <a href="#vault" className="btn-primary">Deposit USDC — eligibility starts after 7 days</a>
-          {swapUrl ? (
-            <a
-              href={swapUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-ghost border-accent-500/20 bg-accent-500/10 text-accent-50 hover:border-accent-400/40 hover:bg-accent-500/15"
-            >
-              <span>Swap on Uniswap</span>
-              {externalIcon}
-              <span className="external-badge">External</span>
-            </a>
-          ) : null}
+          <a
+            href="#swap"
+            className="btn-ghost border-accent-500/20 bg-accent-500/10 text-accent-50 hover:border-accent-400/40 hover:bg-accent-500/15"
+          >
+            <span>Swap through the hook</span>
+          </a>
           <a
             href="https://github.com/emilianosolazzi/The-Pool/blob/main/docs/BOOTSTRAP.md"
             target="_blank"
@@ -62,8 +43,9 @@ export function Hero({ pairSymbol, swapUrl }: { pairSymbol: string; swapUrl?: st
           </span>
         </div>
         <p className="mt-4 max-w-3xl text-sm text-zinc-400">
-          This reference app is <span className="text-zinc-200">vault-only</span>: deposit, withdraw, and
-          live stats. Swaps happen <span className="text-zinc-200">on Uniswap</span>, not inside this repo.
+          Swaps route directly through this app to the pool&apos;s own hook on
+          Arbitrum One. Deposit USDC into the vault to capture 80% of every
+          hook fee in your share price.
         </p>
         <p className="mt-6 max-w-3xl text-xs leading-relaxed text-zinc-500">
           Bonus is share-seconds-weighted, capped at $25K per wallet and $10K per monthly epoch.

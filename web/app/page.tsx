@@ -8,6 +8,7 @@ import { PlainEnglish } from '@/components/PlainEnglish';
 import { StatsGrid } from '@/components/StatsGrid';
 import { VaultCard } from '@/components/VaultCard';
 import { BootstrapPanel } from '@/components/BootstrapPanel';
+import { SwapPanel } from '@/components/SwapPanel';
 import { HowItWorks } from '@/components/HowItWorks';
 import { Footer } from '@/components/Footer';
 import { DEFAULT_CHAIN_ID, getDeployment, type AppChainId } from '@/lib/deployments';
@@ -53,6 +54,12 @@ export default function HomePage() {
         </section>
 
         <BootstrapPanel
+          deployment={deployment}
+          chainId={activeChainId}
+          explorerBase={explorerBase}
+        />
+
+        <SwapPanel
           deployment={deployment}
           chainId={activeChainId}
           explorerBase={explorerBase}
