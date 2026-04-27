@@ -46,7 +46,7 @@ import {
   type SwapPlan,
 } from '@/lib/swap';
 
-const HOOK_FEE_BPS = 25n;          // DynamicFeeHook base hook fee
+const HOOK_FEE_BPS = 25n;          // DynamicFeeHookV2 base hook fee
 const TREASURY_SHARE_BPS = 2000n;  // FeeDistributor default 20%
 const LP_DONATION_BPS = 10_000n - TREASURY_SHARE_BPS;
 const SLIPPAGE_PRESETS = [10, 50, 100]; // 0.1% / 0.5% / 1.0%
@@ -73,6 +73,7 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
   const [amount, setAmount] = useState('');
   const [slippageBps, setSlippageBps] = useState(50);
   const [step, setStep] = useState<'idle' | 'approveErc20' | 'approvePermit2' | 'swap'>('idle');
+  const [planError, setPlanError] = useState<string | null>(null);
 
   // Resolve token addresses defensively so hooks can run unconditionally.
   // When `supported` is false we feed harmless zero-value reads through wagmi
@@ -160,7 +161,13 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
   );
 
   // ── Yield attribution math ────────────────────────────────────────────────
-  const hookFee = (amountIn * HOOK_FEE_BPS) / 10_000n;
+  // DynamicFeeHookV2 fee basis is abs(unspecified delta). For exact-input quotes,
+  // we approximate that with quoted amountOut; fallback to amountIn pre-quote.
+  const feeBasisAmount = amountOut ?? amountIn;
+  const feeBasisDecimals = amountOut ? outputDecimals : inputDecimals;
+  const feeBasisSymbol = amountOut ? outputSymbol : inputSymbol;
+
+  const hookFee = (feeBasisAmount * HOOK_FEE_BPS) / 10_000n;
   const treasuryAmount = (hookFee * TREASURY_SHARE_BPS) / 10_000n;
   const lpDonation = hookFee - treasuryAmount;
   const userShareOfDonation =
@@ -227,7 +234,7 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
 
   const onSwap = () => {
     if (amountIn === 0n || minOut === 0n) return;
-    setStep('swap');
+    setPlanError(null);
     const plan: SwapPlan = {
       poolKey,
       zeroForOne,
@@ -236,7 +243,18 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
       currencyIn: inputToken,
       currencyOut: outputToken,
     };
-    const { commands, inputs } = encodeV4ExactInSingle(plan);
+    let commands: `0x${string}`;
+    let inputs: `0x${string}`[];
+    try {
+      // Throws on uint128 overflow, zero amount, mismatched zeroForOne, or
+      // tokens that aren't part of the pool. Prevents bad calldata from
+      // reaching Universal Router and reverting on-chain.
+      ({ commands, inputs } = encodeV4ExactInSingle(plan));
+    } catch (e) {
+      setPlanError(e instanceof Error ? e.message : 'INVALID_SWAP_PLAN');
+      return;
+    }
+    setStep('swap');
     writeContract({
       address: infra.universalRouter,
       abi: universalRouterAbi,
@@ -254,6 +272,7 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
   const flip = () => {
     setInputIsUSDC((v) => !v);
     setAmount('');
+    setPlanError(null);
   };
 
   const txAction = needsErc20Approve
@@ -288,6 +307,9 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
           Routes through The-Pool&apos;s own Uniswap v4 PoolKey. 80% of every hook fee
           flows back to in-range LPs (including you, if you&apos;ve deposited).
         </p>
+        <p className="mt-2 text-xs text-zinc-500">
+          Swaps are trades. They do not mint vault shares; you receive the output token directly.
+        </p>
       </div>
 
       <div className="card p-5 md:p-6">
@@ -300,6 +322,15 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
               the hook need in-range liquidity; until price enters the range or the
               owner rebalances around the market, the form is preview-only and may
               revert with <code className="text-amber-100">NoLiquidityToReceiveFees</code>.
+            </div>
+          </div>
+        ) : null}
+        {planError ? (
+          <div className="mb-4 rounded-xl border border-red-400/30 bg-red-500/5 p-3 text-xs text-red-200">
+            <div className="font-semibold text-red-100">Swap plan rejected</div>
+            <div className="mt-1 text-red-200/80">
+              Client-side validation failed: <code className="text-red-100">{planError}</code>.
+              Adjust amount or direction and try again.
             </div>
           </div>
         ) : null}
@@ -319,7 +350,7 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
               inputMode="decimal"
               placeholder="0.0"
               value={amount}
-              onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ''))}
+              onChange={(e) => { setAmount(e.target.value.replace(/[^\d.]/g, '')); setPlanError(null); }}
               className="flex-1 bg-transparent text-2xl font-medium text-white outline-none"
             />
             <button
@@ -406,20 +437,24 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
             <div className="font-semibold text-white mb-2">Where this swap&apos;s fee goes</div>
             <div className="grid gap-1 text-zinc-300">
               <Row
-                label="Hook fee on this swap (0.25%)"
-                value={`${fmtUnits(hookFee, inputDecimals, inputIsUSDC ? 4 : 6)} ${inputSymbol}`}
+                label="Estimated hook fee basis (0.25%)"
+                value={`${fmtUnits(hookFee, feeBasisDecimals, feeBasisDecimals === 6 ? 4 : 6)} ${feeBasisSymbol}`}
               />
               <Row
                 label="↳ Treasury (20%)"
-                value={`${fmtUnits(treasuryAmount, inputDecimals, inputIsUSDC ? 4 : 6)} ${inputSymbol}`}
+                value={`${fmtUnits(treasuryAmount, feeBasisDecimals, feeBasisDecimals === 6 ? 4 : 6)} ${feeBasisSymbol}`}
                 muted
               />
               <Row
                 label="↳ LP donation (80%)"
-                value={`${fmtUnits(lpDonation, inputDecimals, inputIsUSDC ? 4 : 6)} ${inputSymbol}`}
+                value={`${fmtUnits(lpDonation, feeBasisDecimals, feeBasisDecimals === 6 ? 4 : 6)} ${feeBasisSymbol}`}
                 muted
               />
             </div>
+            <p className="mt-2 text-xs text-zinc-400">
+              Fee basis tracks the absolute unspecified-currency delta in `afterSwap`.
+              Here it is estimated from quote output for exact-input swaps.
+            </p>
             {userShares && userShares > 0n ? (
               <div className="mt-3 border-t border-white/10 pt-3">
                 <div className="font-semibold text-white mb-1">Your stake&apos;s cut</div>
@@ -433,7 +468,7 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
                 />
                 <Row
                   label="≈ Your share of this swap's donation"
-                  value={`${fmtUnits(userShareOfDonation, inputDecimals, inputIsUSDC ? 6 : 8)} ${inputSymbol}`}
+                  value={`${fmtUnits(userShareOfDonation, feeBasisDecimals, feeBasisDecimals === 6 ? 6 : 8)} ${feeBasisSymbol}`}
                   highlight
                 />
                 <Row

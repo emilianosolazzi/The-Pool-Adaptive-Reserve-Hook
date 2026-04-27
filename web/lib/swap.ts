@@ -4,8 +4,8 @@
 //   currency0   = WETH  0x82aF...Bab1
 //   currency1   = USDC  0xaf88...5831
 //   fee         = 500   (literal 0.05%, NOT dynamic-fee sentinel)
-//   tickSpacing = 10
-//   hooks       = DynamicFeeHook 0x6207...00c4
+//   tickSpacing = 60
+//   hooks       = DynamicFeeHookV2 (address comes from env/deployment config)
 //
 // Flow:
 //   1. User has Permit2 approval on the input token (one-time).
@@ -35,6 +35,54 @@ export const COMMAND_V4_SWAP = 0x10;
 export const ACTION_SWAP_EXACT_IN_SINGLE = 0x06;
 export const ACTION_SETTLE_ALL = 0x0c;
 export const ACTION_TAKE_ALL = 0x0f;
+
+export const MAX_UINT_128: bigint = (1n << 128n) - 1n;
+
+function assertUint128(value: bigint, label: string): void {
+  if (value < 0n || value > MAX_UINT_128) {
+    throw new Error(`${label}_OUT_OF_UINT128_RANGE`);
+  }
+}
+
+function sameAddress(a: Address, b: Address): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Infer zeroForOne from the input currency. v4 PoolKey requires
+ * currency0 < currency1, so the direction is fully determined by
+ * which side the user is paying in.
+ */
+export function inferZeroForOne(poolKey: PoolKeyArg, currencyIn: Address): boolean {
+  if (sameAddress(currencyIn, poolKey.currency0)) return true;
+  if (sameAddress(currencyIn, poolKey.currency1)) return false;
+  throw new Error('INPUT_NOT_IN_POOL');
+}
+
+/**
+ * Validate a SwapPlan against the target PoolKey before encoding.
+ * Catches direction mismatches, zero amounts, uint128 overflow, and
+ * tokens that are not part of the pool. Throws on any inconsistency.
+ */
+export function validateSwapPlan(plan: SwapPlan): void {
+  assertUint128(plan.amountIn, 'AMOUNT_IN');
+  assertUint128(plan.amountOutMinimum, 'AMOUNT_OUT_MINIMUM');
+  if (plan.amountIn === 0n) throw new Error('ZERO_AMOUNT_IN');
+
+  const inIs0 = sameAddress(plan.currencyIn, plan.poolKey.currency0);
+  const inIs1 = sameAddress(plan.currencyIn, plan.poolKey.currency1);
+  const outIs0 = sameAddress(plan.currencyOut, plan.poolKey.currency0);
+  const outIs1 = sameAddress(plan.currencyOut, plan.poolKey.currency1);
+
+  if (!(inIs0 || inIs1)) throw new Error('INPUT_NOT_IN_POOL');
+  if (!(outIs0 || outIs1)) throw new Error('OUTPUT_NOT_IN_POOL');
+  if (sameAddress(plan.currencyIn, plan.currencyOut)) throw new Error('SAME_TOKEN');
+
+  const expectedZeroForOne = inIs0;
+  if (plan.zeroForOne !== expectedZeroForOne) {
+    throw new Error('ZERO_FOR_ONE_MISMATCH');
+  }
+}
 
 // MIN_SQRT_PRICE_LIMIT + 1 / MAX_SQRT_PRICE_LIMIT - 1 (TickMath bounds)
 // In v4, swap params do not take a sqrtPriceLimit at the SWAP_EXACT_IN_SINGLE
@@ -66,6 +114,7 @@ export function encodeV4ExactInSingle(plan: SwapPlan): {
   commands: Hex;
   inputs: Hex[];
 } {
+  validateSwapPlan(plan);
   const commands = encodePacked(['uint8'], [COMMAND_V4_SWAP]);
 
   const actions = encodePacked(

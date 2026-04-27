@@ -6,7 +6,7 @@ const steps = [
   {
     n: '01',
     title: 'Swap triggers the hook',
-    body: 'Every swap on the pool calls DynamicFeeHook — a 25 bps fee is computed, scaled 1.5× during volatile blocks.',
+    body: 'Swaps routed through the pool hook call DynamicFeeHookV2 — a 25 bps fee is computed from swap deltas and can scale 1.5× during volatile blocks.',
   },
   {
     n: '02',
@@ -16,7 +16,7 @@ const steps = [
   {
     n: '03',
     title: 'Share price accrues',
-    body: 'Donated fees flow to in-range LPs including the vault position once active; LiquidityVault share price rises from those fees — no claim, no staking. Anyone can call compound() to harvest fees and redeploy idle balance.',
+    body: 'Donated fees flow to in-range LPs including the vault position once active; LiquidityVaultV2 share price rises from those fees — no claim, no staking. Anyone can call collectYield(); deployment into range occurs on deposit/rebalance paths.',
   },
   {
     n: '04',
@@ -72,8 +72,8 @@ export function HowItWorks({ deployment, chainId }: { deployment: Deployment; ch
           <div className="border-b border-white/5 px-4 py-3 text-xs uppercase tracking-widest text-zinc-500">
             Contracts · {isSepolia ? 'Arbitrum Sepolia' : 'Arbitrum One'}
           </div>
-          {addrRow('LiquidityVault', deployment.vault)}
-          {addrRow('DynamicFeeHook', deployment.hook)}
+          {addrRow('LiquidityVaultV2', deployment.vault)}
+          {addrRow('DynamicFeeHookV2', deployment.hook)}
           {addrRow('FeeDistributor', deployment.distributor)}
           {addrRow('BootstrapRewards', deployment.bootstrap)}
           {addrRow(`Asset (${deployment.assetSymbol})`, deployment.asset)}
@@ -89,7 +89,7 @@ export function HowItWorks({ deployment, chainId }: { deployment: Deployment; ch
           </p>
           <p className="mt-3">
             <span className="text-white">Security</span> — anti-sandwich reference-price
-            gating, 48 h timelock on ownership, ERC-4626 virtual-shares inflation
+            gating, two-step ownership handoff, ERC-4626 virtual-shares inflation
             mitigation, <code className="rounded bg-white/5 px-1 font-mono">SafeERC20</code>{' '}
             on every transfer.
           </p>

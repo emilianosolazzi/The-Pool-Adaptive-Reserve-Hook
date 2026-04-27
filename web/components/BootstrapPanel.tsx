@@ -324,7 +324,7 @@ export function BootstrapPanel({ deployment, chainId, explorerBase }: Props) {
               <p className="mt-3 text-xs text-zinc-500">
                 Eligible shares = your vault share balance, capped per-wallet. Bonus
                 accrual requires holding shares through the epoch dwell period; transfers
-                forfeit unclaimed bonus.
+                can reset/disrupt accrual and may forfeit pending bonus.
               </p>
             </>
           ) : (

@@ -216,7 +216,7 @@ export function ValueCalculator({ deployment, chainId }: Props) {
     const volatilityRate = Math.min(Math.max((parseFloat(volatilityHitRatePct) || 0) / 100, 0), 1);
     const vaultLiquidityShare = Math.min(Math.max((parseFloat(vaultLiquiditySharePct) || 0) / 100, 0), 1);
 
-    // DynamicFeeHook constants and expected fee path.
+    // DynamicFeeHookV2 constants and expected fee path.
     const baseHookFeeBps = 25;
     const expectedHookFeeBps = baseHookFeeBps * (1 + 0.5 * volatilityRate);
     const hookFeeRate = expectedHookFeeBps / 10_000;
@@ -233,7 +233,7 @@ export function ValueCalculator({ deployment, chainId }: Props) {
     // Vault captures only its in-range liquidity share phi.
     const vaultGrossDaily = vaultLiquidityShare * (lpDonationDaily + poolFeesDaily);
 
-    // LiquidityVault performance fee applied at collection time on asset-token yield.
+    // LiquidityVaultV2 performance fee applied at collection time on asset-token yield.
     const perfFeeRate = performanceFeeBps / 10_000;
     const vaultNetDaily = vaultGrossDaily * (1 - perfFeeRate);
 
@@ -569,6 +569,8 @@ export function ValueCalculator({ deployment, chainId }: Props) {
           <div>
             <strong className="text-zinc-300">Expected Hook Fee:</strong> 25 bps base with 1.5x multiplier when volatile.
             Expected hook bps shown above is 25 * (1 + 0.5 * volatility hit rate).
+            For scenario math we approximate swap-level fee basis with volume notional;
+            on-chain fee basis is the absolute unspecified-currency delta per swap.
           </div>
           <div>
             <strong className="text-zinc-300">Fee Split Accuracy:</strong> 20/80 split applies only to hook fees in `FeeDistributor`.
@@ -581,6 +583,7 @@ export function ValueCalculator({ deployment, chainId }: Props) {
           <div>
             <strong className="text-zinc-300">Performance Fee:</strong> {calculations.assumptions.performanceFeePct.toFixed(2)}%
             from `performanceFeeBps` is applied to collected asset-token yield.
+            This scenario assumes captured yield is realized in the asset token at collection time.
           </div>
           <div className="pt-2 border-t border-zinc-700">
             <em className="text-zinc-500">

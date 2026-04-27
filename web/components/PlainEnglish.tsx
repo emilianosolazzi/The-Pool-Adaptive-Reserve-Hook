@@ -1,16 +1,17 @@
 import type { Deployment } from '@/lib/deployments';
 
 /**
- * Plain-English explainer. Facts verified against src/LiquidityVault.sol,
- * src/DynamicFeeHook.sol, src/FeeDistributor.sol:
- *  - 25 BPS base hook fee, 1.5x in volatile blocks, capped at maxFeeBps=50
+ * Plain-English explainer. Facts verified against src/LiquidityVaultV2.sol,
+ * src/DynamicFeeHookV2.sol, src/FeeDistributor.sol:
+ *  - 25 BPS base hook fee, 1.5x in volatile blocks, maxFeeBps default 50
+ *    (owner-adjustable, hard-capped at 1000)
  *  - Default split: 20% of hook fee -> treasury, 80% -> poolManager.donate()
  *    to in-range LPs. treasuryShare is owner-adjustable, hard-capped at 50%
  *    (LP share floor 50%).
  *  - Vault is ERC-4626 single-sided out-of-range (asset only; fee capture starts
  *    once the market price enters the configured range)
  *  - Share price accrues as fees are donated to in-range liquidity; no claim flow.
- *  - Anyone can call compound() to harvest fees and redeploy idle balance.
+ *  - Anyone can call collectYield(); redeployment occurs via deposit/rebalance paths.
  */
 export function PlainEnglish({ deployment }: { deployment: Deployment }) {
   const a = deployment.assetSymbol;
@@ -42,7 +43,7 @@ export function PlainEnglish({ deployment }: { deployment: Deployment }) {
       label: '03',
       body: (
         <>
-          Every swap in that pool pays a{' '}
+          Swaps routed through the hook attempt to apply a{' '}
           <span className="text-white font-semibold">25&nbsp;bps fee</span>{' '}
           (1.5× in volatile blocks, hard-capped at 50&nbsp;bps).
         </>
@@ -68,8 +69,12 @@ export function PlainEnglish({ deployment }: { deployment: Deployment }) {
         <>
           Your <span className="text-white font-semibold">share price rises</span>{' '}
           as in-range fees accrue — no claim, no staking. Anyone can call{' '}
-          <code className="rounded bg-white/5 px-1 font-mono">compound()</code>{' '}
-          to harvest fees and redeploy idle balance into the active range.
+          <code className="rounded bg-white/5 px-1 font-mono">collectYield()</code>{' '}
+          to harvest fees. Deployment into active range occurs on{' '}
+          <code className="rounded bg-white/5 px-1 font-mono">deposit()</code>{' '}
+          and owner{' '}
+          <code className="rounded bg-white/5 px-1 font-mono">rebalance()</code>{' '}
+          paths.
         </>
       ),
     },
@@ -107,7 +112,7 @@ export function PlainEnglish({ deployment }: { deployment: Deployment }) {
             vault is single-sided: it can hold {a} outside the active price band
             while waiting to convert across the owner-configured tick range.
             Fee capture starts when liquidity is in range. Anyone can call{' '}
-            <code className="rounded bg-white/5 px-1 font-mono">compound()</code>{' '}
+            <code className="rounded bg-white/5 px-1 font-mono">collectYield()</code>{' '}
             to harvest accrued fees into share price &mdash; that part is
             permissionless. Moving the range itself (
             <code className="rounded bg-white/5 px-1 font-mono">rebalance()</code>)

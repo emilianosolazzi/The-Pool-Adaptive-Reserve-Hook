@@ -277,8 +277,10 @@ export function VaultCard({ deployment, chainId }: { deployment: Deployment; cha
           )}
 
           <div className="pt-1 text-[11px] text-zinc-600">
-            Deposits mint ERC-4626 shares. Share price rises as hook fees accrue;
-            anyone can call compound() to harvest into the active range.
+            Deposits are not swaps. Deposit mints ERC-4626 vault shares;
+            redeem returns the vault asset by default. Share price rises as
+            hook fees accrue; anyone can call collectYield(). Deployment into
+            active range happens on deposit() and owner rebalance() paths.
           </div>
         </div>
       )}
