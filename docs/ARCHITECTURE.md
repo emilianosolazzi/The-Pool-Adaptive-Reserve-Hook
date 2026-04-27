@@ -4,7 +4,7 @@
 
 The DeFi Hook Protocol is a Uniswap v4 hook system that attaches a dynamic fee layer to a concentrated-liquidity pool and automatically routes collected fees back to LPs and a treasury. An ERC-4626 vault manages the LP position, so depositors hold fungible shares that appreciate as collected asset-token yield accumulates.
 
-Hook donations are not vault-exclusive: the distributor's 80% LP share is donated to pool fee growth, so whichever LP positions are in range at the donation tick earn it pro rata by active liquidity. The vault is a convenience wrapper around one such LP position; it does not receive a privileged fee stream.
+Hook donations are not vault-exclusive: the distributor's LP share (default 80%, never less than 50%) is donated to pool fee growth, so whichever LP positions are in range at the donation tick earn it pro rata by active liquidity. The vault is a convenience wrapper around one such LP position; it does not receive a privileged fee stream.
 
 The system is four Solidity contracts (`>=0.8.24 <0.9.0`) in a strict dependency chain:
 
@@ -16,8 +16,8 @@ Swapper ──► Uniswap v4 PoolManager
                    │ transfer + distribute()
                    ▼
            FeeDistributor
-            ├─ 20% ──► Treasury address (direct transfer)
-            └─ 80% ──► poolManager.donate()  (LP fee growth)
+            ├─ treasuryShare ──► Treasury address (direct transfer; default 20%, owner-adjustable, capped at 50%)
+            └─ remainder    ──► poolManager.donate()  (default 80%; LP fee growth)
                               │ collectYield / withdraw / rebalance
                               ▼
                        LiquidityVault  (ERC-4626)
@@ -78,7 +78,7 @@ Extends `BaseHook` and `Ownable2Step`. Activates `beforeSwap`, `afterSwap`, and 
 
 **View helpers**
 
-- `getSwapFeeInfo(amountIn)` — returns fee breakdown: amount, BPS, treasury/LP split in BPS, description string.
+- `getSwapFeeInfo(amountIn)` — returns fee breakdown: amount, BPS, treasury/LP split in BPS, description string. The treasury/LP split is read live from `FeeDistributor.treasuryShare()`, so the view stays correct after `setTreasuryShare`.
 - `getVolatilityInfo()` — returns threshold BPS, multiplier %, reference price, reference block.
 - `getStats()` — returns `(totalSwaps, totalFeesRouted, distributorAddress)`.
 
@@ -93,9 +93,11 @@ Extends `Ownable2Step` and `ReentrancyGuard`. Single entry point: `distribute(cu
 **Split logic**
 
 ```
-Treasury  =  amount × 20 / 100      (TREASURY_SHARE = 20)
-LPs       =  amount − Treasury      (LP_SHARE = 80)
+Treasury  =  amount × treasuryShare / 100      (default treasuryShare = 20)
+LPs       =  amount − Treasury                 (default LP share = 80)
 ```
+
+`treasuryShare` is owner-adjustable via `setTreasuryShare`, hard-capped at `MAX_TREASURY_SHARE = 50` (LP share floor 50%). Lowering `treasuryShare` only ever increases the LP share.
 
 The LP portion is donated back to the pool via Uniswap v4's sync-settle-donate pattern:
 
@@ -125,13 +127,13 @@ More precisely, the donation accrues to whichever LP positions are in range at `
 | `totalToLPs` | Cumulative LP share |
 | `distributionCount` | Number of `distribute()` calls |
 
-`getLPYieldSummary()` returns `(lpBonusRate=20, totalToLPs, totalToTreasury, distributionCount)`.
+`getLPYieldSummary()` returns `(lpBonusRate = SHARE_DENOMINATOR − treasuryShare, totalToLPs, totalToTreasury, distributionCount)` — `lpBonusRate` reflects the live split.
 
 ### `LiquidityVault` (`src/LiquidityVault.sol`)
 
 Extends `ERC4626`, `Ownable2Step`, `ReentrancyGuard`, and `Pausable`. Manages the single concentrated-liquidity position and handles token approvals through **Permit2** (required by Uniswap v4 PositionManager).
 
-The vault's value proposition is operational convenience: single-sided deposits, ERC-4626 shares, permissionless harvest triggers, and owner-managed range rebalancing. It does not have exclusive access to hook donations; sophisticated users managing their own in-range concentrated position can earn the same pool-level hook donations directly. The default deploy script configures a 5% performance fee on collected asset-token yield, which is a convenience fee rather than access to a privileged rebate stream.
+The vault's value proposition is operational convenience: single-sided deposits, ERC-4626 shares, permissionless harvest triggers, and owner-managed range rebalancing. It does not have exclusive access to hook donations; sophisticated users managing their own in-range concentrated position can earn the same pool-level hook donations directly. The default deploy script configures a 4% performance fee on collected asset-token yield, which is a convenience fee rather than access to a privileged rebate stream.
 
 **Permit2 integration**
 
@@ -208,7 +210,7 @@ redeem(shares, receiver, owner)    [nonReentrant, whenNotPaused]
 
 Callable externally via `collectYield()` (nonReentrant, permissionless).
 
-Under the current implementation, non-asset-token fees are a tracked side balance rather than an auto-compounded vault return. They can later be removed by the owner through `rescueIdle(otherToken)`.
+Under the current implementation, non-asset-token fees are a tracked side balance rather than a redeployed vault return. They can later be removed by the owner through `rescueIdle(otherToken)`.
 
 **Liquidity deployment**
 
@@ -229,10 +231,10 @@ First call uses `MINT_POSITION + SETTLE_PAIR`. Subsequent calls use `INCREASE_LI
 
 | Variable | Default | Notes |
 |---|---|---|
-| `tickLower` | −230 270 | Owner-adjustable via `rebalance()` |
-| `tickUpper` | −69 082 | Owner-adjustable via `rebalance()` |
+| `tickLower` | −201 360 | Owner-adjustable via `rebalance()` |
+| `tickUpper` | −193 200 | Owner-adjustable via `rebalance()` |
 | `treasury` | deployer | Receives performance fees; updatable via `setTreasury()` |
-| `performanceFeeBps` | 0 | Fee on yield; max 2 000 (20%) via `setPerformanceFeeBps()` |
+| `performanceFeeBps` | 0 (contract minimum) / 400 = 4% (deploy default) | Fee on yield; deploy script reads `PERFORMANCE_FEE_BPS` (defaults to 400). Contract initialises to 0; max 2 000 (20%) via `setPerformanceFeeBps()` |
 | `maxTVL` | 0 | Deposit ceiling in asset units; 0 = unlimited; via `setMaxTVL()` |
 | `permit2` | immutable | Canonical Permit2 address or `address(0)` for tests |
 | `positionTokenId` | 0 | ERC-721 token ID of the active v4 position; 0 = no position |
@@ -261,9 +263,14 @@ rebalance(newTickLower, newTickUpper) [onlyOwner, nonReentrant]
 - `pause()` / `unpause()` — emergency circuit breaker.
 - `setTreasury()`, `setPerformanceFeeBps()`, `setMaxTVL()`.
 
+**Permissionless triggers**
+
+- `collectYield()` — anyone can flush accrued fees to share price.
+- `compound()` — anyone can harvest fees and redeploy idle balance into the active range. `whenNotPaused`, `nonReentrant`. Out-of-range / no-position conditions early-return silently so keepers never get reverted. Bootstrap inflow is intentionally not pulled here — callers can multicall `BootstrapRewards.pullInflow()` alongside `compound()` when desired.
+
 **View helpers**
 
-- `getVaultStats()` — returns TVL, share price (1e18 = 1:1), depositors, deployed assets, yield collected, fee description.
+- `getVaultStats()` — returns TVL, share price (1e18 = 1:1), depositors, deployed assets, yield collected, fee description. The fee description is rebuilt live from the current `performanceFeeBps`; the swap-side split is sourced from `DynamicFeeHook.getSwapFeeInfo` to keep one source of truth.
 - `getProjectedAPY(recentYield, windowSeconds)` — returns annualized yield in BPS. Caller supplies the observed window; vault does not store a rolling average.
 
 ---
@@ -284,7 +291,7 @@ rebalance(newTickLower, newTickUpper) [onlyOwner, nonReentrant]
    → feeDistributor.distribute(feeCurrency, fee) called
    → returns afterSwapReturnDelta = fee (tells PM this was consumed)
 5. FeeDistributor.distribute() splits fee:
-   → treasuryAmount = fee × 20 / 100 → transferred to treasury
+   → treasuryAmount = fee × treasuryShare / 100  (default 20%, owner-adjustable, capped at 50%) → transferred to treasury
    → lpAmount = fee − treasuryAmount
    → poolManager.sync(currency) → transfer to PM → settle() → donate()
   → LP fee growth accrues in pool state for whichever LP positions are in range at the donation tick
@@ -362,7 +369,7 @@ forge script script/Deploy.s.sol --tc Deploy --rpc-url $RPC_URL --private-key $P
 | Suite | File | Coverage |
 |---|---|---|
 | Unit — Hook | `test/DynamicFeeHook.t.sol` | Fee calc, volatility multiplier, cap, transient storage, routing |
-| Unit — Distributor | `test/FeeDistributor.t.sol` | 20/80 split, access control, stats accumulation |
+| Unit — Distributor | `test/FeeDistributor.t.sol` | Default 20/80 split, `setTreasuryShare` cap (max 50), access control, stats accumulation |
 | Unit — Vault | `test/LiquidityVault.t.sol` | ERC-4626 mechanics, share price, yield, rebalance, APY math, Ownable2Step |
 | Integration | `test/Integration.t.sol` | Real v4-core `PoolManager`, multi-swap fee accumulation, donate flow |
 | Invariants | `test/invariants/VaultInvariant.t.sol` | Vault accounting invariants |

@@ -2,9 +2,11 @@
 
 **A Uniswap v4 hook protocol that turns every swap into yield for liquidity providers.**
 
-The Pool attaches a programmable fee layer to any Uniswap v4 concentrated-liquidity pool. Swap fees are captured on-chain, split between the protocol treasury and LP fee growth, and auto-compounded into an ERC-4626 vault position — so liquidity providers earn more without changing their workflow.
+The Pool attaches a programmable fee layer to any Uniswap v4 concentrated-liquidity pool. Swap fees are captured on-chain, split between the protocol treasury and LP fee growth, and credited to share price in an ERC-4626 vault — so liquidity providers earn more without changing their workflow.
 
-> Fee-only, auto-compounding LP yield on Uniswap v4. No token, no emissions, no lockups. 25 bps dynamic fee on every swap, scaled 1.5× in volatile blocks, 80% donated directly back to the pool on the same transaction. Share price appreciates automatically — no claim flow, no staking. Owner-adjustable range with zero accounting impact on depositors.
+> Fee-only LP yield on Uniswap v4. No token, no emissions, no lockups. 25 bps dynamic hook fee on every swap, scaled 1.5× in volatile blocks; by default 80% is donated directly back to the pool on the same transaction (treasury share is owner-adjustable, hard-capped at 50%). Share price appreciates as fees accrue — no claim flow, no staking. Anyone can call `compound()` to harvest fees and redeploy idle balance into the active range. Owner-adjustable tick range with zero accounting impact on depositors.
+
+During the bootstrap program, `FeeDistributor.treasury` is set to the `BootstrapRewards` contract, which routes a portion of the treasury share back to early LPs as epoch bonuses — so effective LP share during the program window is higher than the steady-state 80%.
 
 ---
 
@@ -18,8 +20,8 @@ Swapper ──► Uniswap v4 PoolManager
                    │  distribute()
                    ▼
            FeeDistributor
-            ├─ 20% ──► Treasury
-            └─ 80% ──► poolManager.donate()   ← accrues to all in-range LPs
+            ├─ treasuryShare ──► Treasury        (default 20%, owner-adjustable, capped at 50%)
+            └─ remainder ──► poolManager.donate()  (default 80%; accrues to all in-range LPs)
                               │  collectYield / withdraw / rebalance
                               ▼
                        LiquidityVault  (ERC-4626)
@@ -28,7 +30,7 @@ Swapper ──► Uniswap v4 PoolManager
                     v4-periphery PositionManager
 ```
 
-Each swap triggers a 25 BPS hook fee. During periods of elevated volatility — defined as a ≥ 1% price move since the last block — the fee scales to **1.5×**. The total fee is routed through `FeeDistributor`: 20% goes to the treasury, 80% is donated back to the pool via `poolManager.donate()`, flowing directly into LP fee growth. LPs who deposit into the vault have their position auto-compounded on every withdrawal and rebalance.
+Each swap triggers a 25 BPS hook fee. During periods of elevated volatility — defined as a ≥ 1% price move since the last block — the fee scales to **1.5×**. The total fee is routed through `FeeDistributor`: by default 20% goes to the treasury and 80% is donated back to the pool via `poolManager.donate()`, flowing directly into LP fee growth. The treasury share is owner-adjustable via `setTreasuryShare`, hard-capped at 50% (LP share floor 50%). Fee yield collected by the vault accrues to share price; redeployment of the harvested asset back into the active tick range happens on `deposit`, `rebalance`, or any caller invoking the permissionless `compound()`.
 
 ---
 
@@ -38,7 +40,7 @@ Each swap triggers a 25 BPS hook fee. During periods of elevated volatility — 
 |---|---|
 | `src/BaseHook.sol` | Abstract base — `onlyPoolManager` callback guard, permission-bit validation at deployment |
 | `src/DynamicFeeHook.sol` | Fee computation, volatility multiplier, EIP-1153 transient storage, fee routing |
-| `src/FeeDistributor.sol` | 20 / 80 treasury-to-LP fee split via `poolManager.donate()` |
+| `src/FeeDistributor.sol` | Default 20 / 80 treasury-to-LP fee split via `poolManager.donate()`; treasury share owner-adjustable, hard-capped at 50% |
 | `src/LiquidityVault.sol` | ERC-4626 vault — deposits, withdrawals, rebalances, yield harvesting |
 
 For a full description of state machines, data flows, and invariants, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -52,7 +54,8 @@ For code examples and integration snippets, see [`docs/CODE-EXAMPLES.md`](docs/C
 ## Features
 
 **For liquidity providers**
-- **Auto-compounding yield** — accrued fees are harvested and credited to share price on every withdrawal; no manual claim required
+- **Fee yield credited to share price** — swap fees accrue to `totalAssets()` on every `_collectYield()`; no manual claim required
+- **Permissionless `compound()`** — any caller (keeper, depositor, frontend) can harvest fees and redeploy idle balance into the active range; out-of-range conditions early-return silently
 - **Proportional accounting** — share price appreciates uniformly across all depositors; early depositors retain their yield advantage
 - **Tick rebalancing** — the owner can shift the concentrated-liquidity range without disrupting depositor balances or share price
 
@@ -95,7 +98,7 @@ forge test --no-match-contract "Invariant"
 forge test
 ```
 
-**105 tests — 0 failures** (unit, integration, fuzz 1 000 runs, stateful invariants 256 × depth 15).
+**137 tests — 0 failures** (unit, integration, fork, fuzz 1 000 runs, stateful invariants 256 × depth 15).
 
 ### Deploy
 
@@ -110,7 +113,7 @@ POOL_MANAGER=        # Uniswap v4 PoolManager address on target network
 POS_MANAGER=         # Uniswap v4 PositionManager address
 TOKEN0=              # Lower-address token of the pair
 TOKEN1=              # Higher-address token of the pair
-TREASURY=            # Address that receives the 20% protocol fee
+TREASURY=            # Address that receives the treasury share (default 20% of hook fees)
 
 # Optional — pick the vault's deposit asset (defaults to TOKEN0)
 ASSET_TOKEN=         # Must equal TOKEN0 or TOKEN1
@@ -118,7 +121,7 @@ ASSET_TOKEN=         # Must equal TOKEN0 or TOKEN1
 
 #### Reference deployment — USDC / WETH on Arbitrum One
 
-The vault is **single-sided out-of-range** by design: it holds one asset and earns fees while waiting to convert into the other across a configured tick band. For a USDC-deposit vault on the Arbitrum USDC / WETH pair, WETH (`0x82aF…`) sorts below USDC (`0xaf88…`), so `TOKEN0=WETH`, `TOKEN1=USDC`, and `ASSET_TOKEN=TOKEN1`. Default ticks in [`LiquidityVault`](src/LiquidityVault.sol) target the ≈ \$700 – \$1,800 WETH/USDC corridor so the vault activates on real drawdowns; the owner can `rebalance()` any time. A ready-to-edit preset lives in [`.env.example`](.env.example).
+The vault is **single-sided out-of-range** by design: it holds one asset and earns fees while waiting to convert into the other across a configured tick band. For a USDC-deposit vault on the Arbitrum USDC / WETH pair, WETH (`0x82aF…`) sorts below USDC (`0xaf88…`), so `TOKEN0=WETH`, `TOKEN1=USDC`, and `ASSET_TOKEN=TOKEN1`. Default ticks in [`LiquidityVault`](src/LiquidityVault.sol) (`tickLower = -201360`, `tickUpper = -193200`) target the ≈ \$1,800 – \$4,065 WETH/USDC corridor: the vault deploys 100% USDC while ETH is above the band and steadily converts to WETH as price falls into range. The owner can `rebalance()` any time. A ready-to-edit preset lives in [`.env.example`](.env.example).
 
 Optional parameters with their defaults:
 
@@ -181,10 +184,11 @@ All critical paths have been reviewed with emphasis on correctness, arithmetic p
 
 | Category | Count | Configuration |
 |---|---|---|
-| Unit tests | 107 | — |
+| Unit tests | 122 | — |
 | Integration tests | 8 | Real v4 PoolManager |
+| Fork tests | 3 | Arbitrum One pinned block |
 | Stateful invariants | 4 | 256 runs × depth 15 |
-| **Total** | **119** | **0 failures** |
+| **Total** | **137** | **0 failures** |
 
 ### External Audit: Complete
 
