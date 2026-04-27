@@ -121,16 +121,16 @@ ASSET_TOKEN=         # Must equal TOKEN0 or TOKEN1
 
 #### Reference deployment — USDC / WETH on Arbitrum One
 
-The vault is **single-sided out-of-range** by design: it holds one asset and earns fees while waiting to convert into the other across a configured tick band. For a USDC-deposit vault on the Arbitrum USDC / WETH pair, WETH (`0x82aF…`) sorts below USDC (`0xaf88…`), so `TOKEN0=WETH`, `TOKEN1=USDC`, and `ASSET_TOKEN=TOKEN1`. Default ticks in [`LiquidityVault`](src/LiquidityVault.sol) (`tickLower = -201360`, `tickUpper = -193200`) target the ≈ \$1,800 – \$4,065 WETH/USDC corridor: the vault deploys 100% USDC while ETH is above the band and steadily converts to WETH as price falls into range. The owner can `rebalance()` any time. A ready-to-edit preset lives in [`.env.example`](.env.example).
+The vault is **single-sided out-of-range** by design: it holds one asset and earns fees while waiting to convert into the other across a configured tick band. For a USDC-deposit vault on the Arbitrum USDC / WETH pair, WETH (`0x82aF…`) sorts below USDC (`0xaf88…`), so `TOKEN0=WETH`, `TOKEN1=USDC`, and `ASSET_TOKEN=TOKEN1`. **Pool: 0.05% fee tier (`POOL_FEE=500`), `TICK_SPACING=10`.** Default ticks in [`LiquidityVault`](src/LiquidityVault.sol) (`tickLower = -201360`, `tickUpper = -193200`, both multiples of 10) target the ≈ \$1,800 – \$4,065 WETH/USDC corridor: the vault deploys 100% USDC while ETH is above the band and steadily converts to WETH as price falls into range. The owner can `rebalance(newTickLower, newTickUpper)` any time to a new pair of tick-spacing-aligned ticks. A ready-to-edit preset lives in [`.env.example`](.env.example).
 
-Optional parameters with their defaults:
+Optional parameters with their script defaults (the live Arbitrum One deployment overrides `POOL_FEE` / `TICK_SPACING` via `.env.example` to match the 0.05% USDC/WETH pool):
 
 ```bash
 PERFORMANCE_FEE_BPS=400    # Vault yield cut sent to treasury (0–2000 BPS)
 MAX_TVL=0                  # Deposit ceiling in asset-token units; 0 = unlimited
 MAX_FEE_BPS=50             # Hook fee ceiling in BPS (hard cap, max 1000)
-POOL_FEE=100               # Uniswap pool fee tier
-TICK_SPACING=1             # Pool tick spacing
+POOL_FEE=500               # Uniswap v4 pool fee tier (0.05%; reference deployment)
+TICK_SPACING=10            # Pool tick spacing (matches POOL_FEE=500)
 SQRT_PRICE_X96=            # Initial pool price; omit to default to 1:1
 ```
 
