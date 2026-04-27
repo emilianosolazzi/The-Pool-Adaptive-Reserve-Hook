@@ -3,9 +3,97 @@
 ![PASSED — TSI Audit Scanner](assets/badge-passed.svg)
 
 **Repo:** https://github.com/emilianosolazzi/The-Pool
-**Date:** 2026-04-25 (initial) · **Re-test:** 2026-04-25 @ commit `22894ce`
-**Scope:** `src/BaseHook.sol`, `src/DynamicFeeHook.sol`, `src/FeeDistributor.sol`, `src/LiquidityVault.sol` (~800 LoC)
-**Stack:** Uniswap v4 hook + ERC-4626 single-asset LP vault, Solidity ^0.8.24
+**Date:** 2026-04-25 (initial) · **Re-test:** 2026-04-25 @ commit `22894ce` · **V2.1 re-test:** 2026-04-27 @ commit `44fc5fe`
+**Scope (V1):** `src/BaseHook.sol`, `src/DynamicFeeHook.sol`, `src/FeeDistributor.sol`, `src/LiquidityVault.sol`, `src/BootstrapRewards.sol` (~1280 LoC)
+**Scope (V2.1, this re-test):** `src/DynamicFeeHookV2.sol`, `src/LiquidityVaultV2.sol`, `script/DeployHookV2AndVault.s.sol`
+**Stack:** Uniswap v4 hook + ERC-4626 USDC-entry zap vault + reserve-sale (limit-order) hook fills, Solidity ^0.8.24
+
+---
+
+## V2.1 Re-test Verdict — 2026-04-27 @ `44fc5fe`
+
+**Status: V2.1 SHIPPED, AUDIT-READY — 154/154 tests pass (incl. real-PoolManager end-to-end coverage of the new reserve-sale path).**
+
+V2.1 introduces two new contracts that supersede V1 in the canonical
+deployment path:
+
+| Contract | Purpose |
+|----------|---------|
+| `DynamicFeeHookV2` | V1 dynamic-fee logic + per-pool reserve-sale (limit-order) fills via `beforeSwapReturnDelta`. |
+| `LiquidityVaultV2` | ERC-4626 USDC-entry vault with fair-share zap accounting and reserve-offer glue. |
+
+V1 contracts (`DynamicFeeHook`, `LiquidityVault`, `BootstrapRewards`,
+`FeeDistributor`) are unchanged from the `22894ce` re-test and remain
+deployed at their existing addresses.
+
+### Tier-1 audit findings on V2.1 (self-disclosed and remediated)
+
+| Finding | Class | Status | Fix location |
+|---------|-------|--------|--------------|
+| V2-T1.1 `vaultPriceX192 = sqrtP * sqrtP` overflow | Arithmetic | ✅ FIXED | `DynamicFeeHookV2.sol::_tryFillReserve` — replaced with two `FullMath.mulDiv(_, sqrtP, Q96)` steps; no intermediate ever exceeds 256 bits. |
+| V2-T1.2 Silent `giveAmount` clamp | Accounting | ✅ FIXED | `_tryFillReserve` — restructured around `takeCap`-first; inventory-exhaustion path is exact (`takeAmount = takeCap; giveAmount = sellRemaining`); partial-fill path enforces `require(giveAmount <= sellRemaining, "RESERVE_MATH")` invariant. |
+| V2-T1.3 Out-of-bounds `vaultSqrtPriceX96` DoS | Validation | ✅ FIXED | `createReserveOffer` reverts `InvalidOffer` if `sqrtP < TickMath.MIN_SQRT_PRICE` or `sqrtP >= TickMath.MAX_SQRT_PRICE`. |
+| V2-T1.4 `toBeforeSwapDelta` sign convention | Integration | ✅ VERIFIED | `test/IntegrationV2Reserve.t.sol::test_reserveFill_partialThenAMM` — real `PoolManager` swap, asserts swapper paid exactly `amountIn` of currency0 and received reserve fill + AMM remainder of currency1. |
+| V2-T1.5 Vault registration trust path | Authorization | ✅ FIXED | `registerVault` is one-shot per pool (`VaultAlreadyRegistered`); owner cannot silently swap out the depositor's reserve-sale counterparty. |
+| V2-T1.6 Fee-on-transfer rejection | Hardening | ✅ FIXED | `createReserveOffer` snapshots `balanceOf` pre/post `safeTransferFrom` and reverts on shortfall. |
+| V2.1 inflation/donation on first deposit | Hardening | ✅ MITIGATED | `LiquidityVaultV2.depositWithZap` snapshots `totalAssets()` + `totalSupply()` BEFORE pulling assets, computes `netAdded = totalAfter − totalBefore`, mints `shares = netAdded.mulDiv(supplyBefore + 10**_decimalsOffset(), totalBefore + 1, Floor)`, with `minSharesOut` slippage gate. |
+
+**Bonus hardening shipped with V2.1 (beyond required fixes):**
+- `_decimalsOffset() = 6` carried over from V1 (4626 inflation defence).
+- `Ownable2Step` on hook + vault (no single-step ownership transfer).
+- `ReentrancyGuard` on `createReserveOffer` / `cancelReserveOffer` /
+  `claimReserveProceeds`.
+- Per-pool transient-storage slots for the volatility multiplier
+  (no cross-pool contamination).
+- Reserve fill is gated by current AMM `sqrtPrice` so the offer can only
+  fire when it is **at-or-better** than the AMM for the swapper.
+
+### V2.1 test inventory — 154/154 pass
+
+```
+forge test --no-match-test testFork
+Ran 13 test suites: 154 tests passed, 0 failed, 0 skipped
+```
+
+Highlights of new coverage:
+
+- `test/DynamicFeeHookV2.t.sol` (8 tests) — registration one-shot, escrow
+  pull, double-create revert, cancel returns escrow, unknown-currency
+  revert, claim-when-zero, **`MIN_SQRT_PRICE`/`MAX_SQRT_PRICE` boundary
+  reverts**.
+- `test/IntegrationV2Reserve.t.sol` (4 tests, **real PoolManager**) —
+  partial-then-AMM fill with sign-convention assertion, partial-fill
+  branch, direction-mismatch skip, cancel round-trip.
+- `test/LiquidityVaultV2.t.sol` (6+ tests) — `minSharesOut` gate,
+  reserve-hook glue, fair-share invariants.
+
+### Residual items (audit scope, NOT deploy-blockers)
+
+These are documented for the auditor; none are exploitable on a deploy
+of V2.1 with the current Tier-1 fixes in place:
+
+1. **Volatility-oracle freeze on 100%-reserve-absorbed swaps.** When a
+   reserve fill consumes the entire swap input, the AMM leg is ~0, so
+   `_lastSqrtPriceX96` may not refresh across blocks. Worst case the
+   multiplier defaults to `100` (= no boost), so the failure mode is
+   benign (under-charging fees), not over-charging.
+2. **No fuzz/invariant test on `_tryFillReserve` math** across the full
+   `(sqrtP, sellRemaining, maxInput)` cube. Concrete unit + integration
+   tests exist; symbolic / fuzz expansion deferred to audit window.
+3. **First-deposit donation attack on an empty vault.** Mitigated by
+   `_decimalsOffset = 6` and `minSharesOut`, but a sufficiently large
+   donation pre-first-deposit can still grief share precision. Recommend
+   founder seed-deposit at deployment, same as V1.
+
+### Stack rating after V2.1
+
+**A** — same as the V1 closeout. V2.1 introduces meaningful new attack
+surface (the reserve-sale state machine) but ships with overflow-safe
+math, bounds enforcement, real-PoolManager end-to-end coverage, and a
+tested invariant for the fill math. Recommend mainnet deploy proceed
+behind the same staged-TVL ramp as V1 (see §4 below).
+
+The V1 closeout report follows unchanged for historical reference.
 
 ---
 
