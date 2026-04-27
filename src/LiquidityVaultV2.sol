@@ -164,8 +164,10 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     event BootstrapPokeFailed(address indexed user, bytes reason);
     event NavReferenceRefreshed(uint160 oldRef, uint160 newRef);
     event MaxNavDeviationBpsUpdated(uint256 oldBps, uint256 newBps);
+    event NativeRescued(address indexed to, uint256 amount);
 
     error NAV_PRICE_DEVIATION();
+    error NativeNotSupported();
 
     constructor(
         IERC20 _asset,
@@ -187,7 +189,17 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
-    receive() external payable {}
+    /// @notice The vault is ERC-20-only. Native ETH is explicitly unsupported;
+    ///         plain transfers and fallback calls revert. ETH can still arrive
+    ///         via SELFDESTRUCT or coinbase forwarding (these bypass
+    ///         receive/fallback); use `rescueNative` to recover such dust.
+    receive() external payable {
+        revert NativeNotSupported();
+    }
+
+    fallback() external payable {
+        if (msg.value > 0) revert NativeNotSupported();
+    }
 
     function totalAssets() public view override returns (uint256) {
         uint256 idleAsset = IERC20(asset()).balanceOf(address(this));
@@ -940,6 +952,18 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Owner-only emergency rescue for native ETH that bypassed the
+    ///         reverting receive/fallback (e.g. via SELFDESTRUCT or block
+    ///         reward forwarding). The vault is ERC-20-only; any ETH balance
+    ///         here is unintended dust and is not part of NAV.
+    function rescueNative(address payable to, uint256 amount) external onlyOwner nonReentrant {
+        require(to != address(0), "ZERO_ADDRESS");
+        require(amount <= address(this).balance, "AMOUNT_EXCEEDS_BALANCE");
+        (bool ok, ) = to.call{value: amount}("");
+        require(ok, "NATIVE_TRANSFER_FAILED");
+        emit NativeRescued(to, amount);
+    }
 
     function _otherToken() internal view returns (address) {
         if (!_poolKeySet) return address(0);

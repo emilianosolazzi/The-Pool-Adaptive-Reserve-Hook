@@ -156,6 +156,15 @@ contract MockBootstrapRewards {
     }
 }
 
+/// @dev Forces ETH into a target contract via SELFDESTRUCT, bypassing
+///      receive/fallback. Used to simulate stuck-ETH scenarios that the
+///      vault's `rescueNative` is meant to recover from.
+contract EthForcer {
+    constructor(address payable target) payable {
+        selfdestruct(target);
+    }
+}
+
 contract LiquidityVaultV2Test is Test {
     LiquidityVaultV2 public vault;
     MockERC20 public usdc;
@@ -943,6 +952,66 @@ contract LiquidityVaultV2Test is Test {
         vm.expectRevert(LiquidityVaultV2.NAV_PRICE_DEVIATION.selector);
         vault.deposit(100e6, attacker);
         vm.stopPrank();
+    }
+
+    // ---------------------------------------------------------------
+    // Native-ETH posture: vault is ERC-20-only.
+    //   - receive()/fallback() revert NativeNotSupported on plain transfers.
+    //   - rescueNative() lets the owner recover ETH that bypassed those
+    //     guards (e.g. via SELFDESTRUCT or block-reward forwarding).
+    // ---------------------------------------------------------------
+
+    function test_native_plainTransferReverts() public {
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(LiquidityVaultV2.NativeNotSupported.selector);
+        (bool ok, ) = payable(address(vault)).call{value: 1 ether}("");
+        ok; // silence unused warning; we asserted via expectRevert
+    }
+
+    function test_native_fallbackWithValueReverts() public {
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(LiquidityVaultV2.NativeNotSupported.selector);
+        (bool ok, ) = payable(address(vault)).call{value: 1 ether}(hex"deadbeef");
+        ok;
+    }
+
+    function test_native_rescue_ownerCanRecoverForcedEth() public {
+        // Force-send 1 ether to the vault via SELFDESTRUCT; this bypasses
+        // receive/fallback so the ETH lands on the vault's balance.
+        vm.deal(address(this), 1 ether);
+        new EthForcer{value: 1 ether}(payable(address(vault)));
+        assertEq(address(vault).balance, 1 ether, "forced ETH not received");
+
+        address payable recipient = payable(makeAddr("rescueRecipient"));
+        uint256 beforeBal = recipient.balance;
+        vault.rescueNative(recipient, 1 ether);
+        assertEq(address(vault).balance, 0, "vault still holds ETH");
+        assertEq(recipient.balance - beforeBal, 1 ether, "recipient did not receive");
+    }
+
+    function test_native_rescue_nonOwnerReverts() public {
+        vm.deal(address(this), 1 ether);
+        new EthForcer{value: 1 ether}(payable(address(vault)));
+
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.rescueNative(payable(alice), 1 ether);
+    }
+
+    function test_native_rescue_zeroAddressReverts() public {
+        vm.deal(address(this), 1 ether);
+        new EthForcer{value: 1 ether}(payable(address(vault)));
+
+        vm.expectRevert(bytes("ZERO_ADDRESS"));
+        vault.rescueNative(payable(address(0)), 1 ether);
+    }
+
+    function test_native_rescue_overBalanceReverts() public {
+        vm.deal(address(this), 1 ether);
+        new EthForcer{value: 1 ether}(payable(address(vault)));
+
+        vm.expectRevert(bytes("AMOUNT_EXCEEDS_BALANCE"));
+        vault.rescueNative(payable(makeAddr("recipient")), 2 ether);
     }
 }
 
