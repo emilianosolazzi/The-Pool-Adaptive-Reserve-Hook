@@ -45,6 +45,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     using StateLibrary for IPoolManager;
 
     uint256 public constant MIN_DEPOSIT = 1e6;
+    uint256 private constant Q96 = 1 << 96;
 
     int24 public tickLower = -199020;
     int24 public tickUpper = -198840;
@@ -141,17 +142,27 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
 
         address otherAddr = _otherToken();
         uint256 idleOther = otherAddr.code.length > 0 ? IERC20(otherAddr).balanceOf(address(this)) : 0;
-        uint256 priceX192 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
-
         if (assetIsToken0) {
             uint256 otherTotal = amt1 + idleOther;
-            uint256 otherInAsset = priceX192 == 0 ? 0 : FullMath.mulDiv(otherTotal, 1 << 192, priceX192);
+            uint256 otherInAsset = _quoteToken1ToToken0(otherTotal, uint256(sqrtPriceX96));
             return idleAsset + amt0 + otherInAsset;
         } else {
             uint256 otherTotal = amt0 + idleOther;
-            uint256 otherInAsset = FullMath.mulDiv(otherTotal, priceX192, 1 << 192);
+            uint256 otherInAsset = _quoteToken0ToToken1(otherTotal, uint256(sqrtPriceX96));
             return idleAsset + amt1 + otherInAsset;
         }
+    }
+
+    function _quoteToken0ToToken1(uint256 amount0, uint256 sqrtPriceX96) internal pure returns (uint256) {
+        if (amount0 == 0) return 0;
+        uint256 token1Partial = FullMath.mulDiv(amount0, sqrtPriceX96, Q96);
+        return FullMath.mulDiv(token1Partial, sqrtPriceX96, Q96);
+    }
+
+    function _quoteToken1ToToken0(uint256 amount1, uint256 sqrtPriceX96) internal pure returns (uint256) {
+        if (amount1 == 0) return 0;
+        uint256 token0Partial = FullMath.mulDiv(amount1, Q96, sqrtPriceX96);
+        return FullMath.mulDiv(token0Partial, Q96, sqrtPriceX96);
     }
 
     function _decimalsOffset() internal pure override returns (uint8) {
@@ -202,6 +213,23 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         _deposit(msg.sender, receiver, assets, shares);
         _deployBalancedLiquidity(0);
         return shares;
+    }
+
+    function mint(uint256 shares, address receiver)
+        public
+        override
+        nonReentrant
+        whenNotPaused
+        returns (uint256 assets)
+    {
+        require(_poolKeySet, "POOL_KEY_NOT_SET");
+        assets = previewMint(shares);
+        require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
+        if (maxTVL > 0) require(totalAssets() + assets <= maxTVL, "TVL_CAP");
+        if (balanceOf(receiver) == 0) totalDepositors++;
+
+        _deposit(msg.sender, receiver, assets, shares);
+        _deployBalancedLiquidity(0);
     }
 
     /// @notice Fair-zap deposit: shares are minted from the NAV delta produced

@@ -147,4 +147,25 @@ contract LiquidityVaultV2Test is Test {
         vm.expectRevert("HOOK_NOT_SET");
         vault.offerReserveToHook(Currency.wrap(address(weth)), uint128(1 ether), uint160(1 << 96), 0);
     }
+
+    function test_mintRunsVaultDepositControls() public {
+        uint256 sharesToMint = vault.previewDeposit(vault.MIN_DEPOSIT());
+        uint256 assetsRequired = vault.previewMint(sharesToMint);
+
+        usdc.mint(alice, assetsRequired);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 spent = vault.mint(sharesToMint, alice);
+        vm.stopPrank();
+
+        assertEq(spent, assetsRequired, "mint consumed previewed assets");
+        assertEq(vault.balanceOf(alice), sharesToMint, "shares minted");
+        assertEq(vault.totalDepositors(), 1, "mint path updates depositor accounting");
+    }
+
+    function test_totalAssetsHandlesLargeSqrtPriceWithoutOverflow() public {
+        weth.mint(address(vault), 1 ether);
+        mockManager.setSlot0(type(uint160).max, -198900);
+        vault.totalAssets();
+    }
 }
