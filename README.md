@@ -98,7 +98,7 @@ forge test --no-match-contract "Invariant"
 forge test
 ```
 
-**137 tests — 0 failures** (unit, integration, fork, fuzz 1 000 runs, stateful invariants 256 × depth 15).
+**134 tests — 0 failures** (unit, integration, fork, fuzz 1 000 runs, stateful invariants 256 × depth 15).
 
 ### Deploy
 
@@ -148,16 +148,22 @@ The deploy script mines a valid hook address (CREATE2 with permission bits), dep
 
 | Component | Address |
 |---|---|
-| FeeDistributor | `0x474F59AE4699743AcC8563e7833e2bE90e7426C3` |
-| LiquidityVault | `0x87F2db1A41A9227CBfBBC00A5AdE5770C85b3d71` |
-| DynamicFeeHook | `0x62076C1Cb0Ea57Acd2353fF45226a1FB1e6100c4` |
-| BootstrapRewards | `0x2f9Ba00A0AA3533874294c55144a30Bf6a7b7a63` |
+| FeeDistributor | `0x9e3aAb5DdBF536c087319431afCAf2F1160942e1` |
+| LiquidityVault | `0x02D5a1340D378695D50FF7dE0F5778018952c5EA` |
+| DynamicFeeHook | `0x453CFf45DAC5116f8D49f7cfE6AEB56107a780c4` |
+| BootstrapRewards | `0x029C2FEeB98050295C108E370fa74081ed58F978` |
 
 > The tick range above documents the **source defaults** in [`LiquidityVault`](src/LiquidityVault.sol). The live vault has been operationally `rebalance()`d since deployment and may sit at a different tick-spacing-aligned range. Read `tickLower` / `tickUpper` from the deployed contract for the current live corridor.
 
-Bootstrap activation txs:
-- Deploy BootstrapRewards: `0xc2eaece0e89b2489b6ca4836935be14efc6d40d3e44ec72fe23363ed24a7b2e3`
-- Wire `FeeDistributor.treasury` to BootstrapRewards: `0xbcf1c27ecc1c63bef350e2d3eef98b0540d4495ea33254c6fd61eb07a2644722`
+Redeploy txs:
+- Deploy FeeDistributor: `0xa7aafdf7635948d964270ad47f68924d8b5baaeca24f085627c057564d70fb24`
+- Deploy LiquidityVault: `0x36c5d0f0d36cdf519cf5acc42b6d77d960967a7c2cdd0f660d51b71c71ed96aa`
+- Deploy DynamicFeeHook: `0xe38566b012f57c6ca50708db08fbe730895bc17e3d8478dc8f934a16b0f1ca99`
+- Deploy BootstrapRewards: `0xf4fb48b675c92bafb134609efedfc78b09d5370fe266db55c671aacb20d07200`
+- Wire `FeeDistributor.treasury` to BootstrapRewards: `0xa2334a4c6883cb9ffeaf5dc8cd579d5d04ac42eb2a5941b1d1a60f05e76e1127`
+- Initialize PoolManager pool: `0xee5a11b901b6df18c03f6b9a1064682cfea0ec0e7885aee2a223840bd5addfc1`
+- Register pool key on FeeDistributor: `0xae8589536266e577d10119b9bce898ae2145eba78aec8f488644d9291189250b`
+- Register pool key on LiquidityVault: `0xac7bab8d392d558bad55f1bd7ff64bd8fca9acb8eeceb7d11591d771725f2165`
 
 ---
 

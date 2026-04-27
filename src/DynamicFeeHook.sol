@@ -6,7 +6,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
@@ -40,15 +40,23 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     uint256 private constant VOLATILITY_THRESHOLD_BPS = 100; // 1% inter-swap price move
     uint256 private constant VOLATILITY_FEE_MULTIPLIER = 150; // 1.5x fee in volatile regime
 
-    uint256 private constant PENDING_FEE_SLOT = 0xd1e54fc46e96497529fdb4b5abbcd802754a86c33bab838d6ce7d6ec96497b88;
-    uint256 private constant PENDING_CURRENCY_SLOT = 0x2977767698129b4908fb9b19423b38883970765ad9aba8979e231f45612fa01e;
-    uint256 private constant PENDING_POOL_ID_SLOT = 0x133a216bd676e8f955ffab19625ed7338b8d768a478c1f19ae573da66791ad78;
-    uint256 private constant PENDING_ACTIVE_SLOT = 0x9f335ffcc512b8308a51f958d03ae1d48e958c73fa34515db9db2ad5fb42cb6d;
+    // Transient slots: only the volatility multiplier and pool-id need to cross
+    // beforeSwap -> afterSwap. The fee itself is now derived from BalanceDelta
+    // inside afterSwap (Finding 2 fix), so PENDING_FEE_SLOT / PENDING_CURRENCY_SLOT
+    // are no longer needed.
+    uint256 private constant PENDING_MULTIPLIER_SLOT = 0xd1e54fc46e96497529fdb4b5abbcd802754a86c33bab838d6ce7d6ec96497b88;
+    uint256 private constant PENDING_POOL_ID_SLOT   = 0x133a216bd676e8f955ffab19625ed7338b8d768a478c1f19ae573da66791ad78;
+    uint256 private constant PENDING_ACTIVE_SLOT    = 0x9f335ffcc512b8308a51f958d03ae1d48e958c73fa34515db9db2ad5fb42cb6d;
     uint256 private constant MAX_AFTER_SWAP_RETURN_DELTA = uint256(uint128(type(int128).max));
 
     IFeeDistributor public feeDistributor;
-    uint160 private lastSqrtPriceX96;
-    uint256 private lastSwapBlock; // anti-sandwich: reference price updates only at block boundaries
+    // Per-pool volatility oracle state (Finding 1 fix). The hook may be attached
+    // to multiple pools; using global slots let an attacker initialize a side
+    // pool, write an extreme sqrtPriceX96 into the shared slot via a tiny
+    // (fee==0) swap, and force the 1.5x volatility multiplier on the next
+    // legitimate swap of the canonical pool. Keying by PoolId isolates state.
+    mapping(PoolId => uint160) private _lastSqrtPriceX96;
+    mapping(PoolId => uint256) private _lastSwapBlock;
     uint256 public totalSwaps;
     uint256 public totalFeesRouted;
 
@@ -104,36 +112,25 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         // The afterSwap return-delta is applied to the UNSPECIFIED currency, so the
         // fee we charge in beforeSwap MUST be denominated in that same currency.
         if (params.amountSpecified == type(int256).min) revert InvalidSwapAmount();
-        bool exactInput = params.amountSpecified < 0;
-        uint256 amountIn = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 fee = amountIn.mulDiv(HOOK_FEE_BPS, BPS_DENOMINATOR);
 
-        if (lastSqrtPriceX96 != 0) {
-            (uint160 currentSqrtPrice,,,) = poolManager.getSlot0(key.toId());
-            uint256 delta = currentSqrtPrice > lastSqrtPriceX96
-                ? currentSqrtPrice - lastSqrtPriceX96
-                : lastSqrtPriceX96 - currentSqrtPrice;
-            if (delta.mulDiv(BPS_DENOMINATOR, lastSqrtPriceX96) >= VOLATILITY_THRESHOLD_BPS) {
-                fee = fee.mulDiv(VOLATILITY_FEE_MULTIPLIER, 100);
+        // Volatility multiplier is computed against per-pool reference price
+        // (Finding 1 fix). We only stash the multiplier here -- the fee amount
+        // itself is sized in afterSwap from BalanceDelta to avoid the
+        // unit-mismatch DoS (Finding 2).
+        PoolId pid = key.toId();
+        uint256 multiplier = 100; // 1.0x default
+        uint160 ref = _lastSqrtPriceX96[pid];
+        if (ref != 0) {
+            (uint160 currentSqrtPrice,,,) = poolManager.getSlot0(pid);
+            uint256 d = currentSqrtPrice > ref ? currentSqrtPrice - ref : ref - currentSqrtPrice;
+            if (d.mulDiv(BPS_DENOMINATOR, ref) >= VOLATILITY_THRESHOLD_BPS) {
+                multiplier = VOLATILITY_FEE_MULTIPLIER;
             }
         }
 
-        uint256 feeCap = amountIn.mulDiv(maxFeeBps, BPS_DENOMINATOR);
-        if (fee > feeCap) fee = feeCap;
-
-        // Unspecified-currency selection (matches v4 afterSwapReturnDelta semantics):
-        //   exactInput  + zeroForOne   -> unspecified = currency1
-        //   exactInput  + oneForZero   -> unspecified = currency0
-        //   exactOutput + zeroForOne   -> unspecified = currency0
-        //   exactOutput + oneForZero   -> unspecified = currency1
-        // i.e. unspecified is currency1 iff (zeroForOne == exactInput).
-        Currency feeCurrency = (params.zeroForOne == exactInput) ? key.currency1 : key.currency0;
-        uint256 currencyAsUint = uint256(uint160(Currency.unwrap(feeCurrency)));
-        bytes32 poolId = PoolId.unwrap(key.toId());
-
+        bytes32 poolId = PoolId.unwrap(pid);
         assembly {
-            tstore(PENDING_FEE_SLOT, fee)
-            tstore(PENDING_CURRENCY_SLOT, currencyAsUint)
+            tstore(PENDING_MULTIPLIER_SLOT, multiplier)
             tstore(PENDING_POOL_ID_SLOT, poolId)
             tstore(PENDING_ACTIVE_SLOT, 1)
         }
@@ -142,33 +139,55 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
-    function afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
+    function afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
         external
         override
         onlyPoolManager
         returns (bytes4, int128)
     {
-        uint256 fee;
-        uint256 rawCurrency;
+        uint256 multiplier;
         uint256 active;
         bytes32 pendingPoolId;
         assembly {
-            fee := tload(PENDING_FEE_SLOT)
-            rawCurrency := tload(PENDING_CURRENCY_SLOT)
+            multiplier := tload(PENDING_MULTIPLIER_SLOT)
             pendingPoolId := tload(PENDING_POOL_ID_SLOT)
             active := tload(PENDING_ACTIVE_SLOT)
-            tstore(PENDING_FEE_SLOT, 0)
-            tstore(PENDING_CURRENCY_SLOT, 0)
+            tstore(PENDING_MULTIPLIER_SLOT, 0)
             tstore(PENDING_POOL_ID_SLOT, 0)
             tstore(PENDING_ACTIVE_SLOT, 0)
         }
 
+        // No matching beforeSwap (foreign-pool callback / disabled path).
+        // Importantly we do NOT refresh the volatility reference here:
+        // a caller could attach this hook to a side pool and contaminate
+        // the per-pool oracle by routing through afterSwap with active=0.
         if (active == 0) return (BaseHook.afterSwap.selector, 0);
 
         bytes32 actualPoolId = PoolId.unwrap(key.toId());
         if (pendingPoolId != actualPoolId) revert PendingSwapMismatch(pendingPoolId, actualPoolId);
 
-        Currency feeCurrency = Currency.wrap(address(uint160(rawCurrency)));
+        // Finding 2 fix: fee is sized from the actual unspecified-currency leg
+        // of the BalanceDelta, so the unit matches the currency the hook is
+        // about to take from the PoolManager. Computing fee from
+        // |amountSpecified| (specified currency) and then taking it in the
+        // unspecified currency caused a DoS on cross-decimal pairs (e.g.
+        // WETH/USDC: 1e18 wei -> 2.5e15 raw USDC = $2.5B fee, take reverts).
+        bool exactInput = params.amountSpecified < 0;
+        // Unspecified-currency selection (matches v4 afterSwapReturnDelta):
+        //   exactInput  + zeroForOne   -> unspecified = currency1 (output)
+        //   exactInput  + oneForZero   -> unspecified = currency0 (output)
+        //   exactOutput + zeroForOne   -> unspecified = currency0 (input)
+        //   exactOutput + oneForZero   -> unspecified = currency1 (input)
+        bool unspecIsCurrency1 = (params.zeroForOne == exactInput);
+        Currency feeCurrency = unspecIsCurrency1 ? key.currency1 : key.currency0;
+        int128 unspecDelta = unspecIsCurrency1 ? BalanceDeltaLibrary.amount1(delta) : BalanceDeltaLibrary.amount0(delta);
+        uint256 absUnspec = unspecDelta < 0
+            ? uint256(uint128(-unspecDelta))
+            : uint256(uint128(unspecDelta));
+
+        uint256 fee = absUnspec.mulDiv(HOOK_FEE_BPS, BPS_DENOMINATOR).mulDiv(multiplier, 100);
+        uint256 feeCap = absUnspec.mulDiv(maxFeeBps, BPS_DENOMINATOR);
+        if (fee > feeCap) fee = feeCap;
 
         if (fee == 0) {
             _refreshVolatilityReference(key);
@@ -191,14 +210,15 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     }
 
     function _refreshVolatilityReference(PoolKey calldata key) internal {
-        (uint160 sqrtAfter,,,) = poolManager.getSlot0(key.toId());
+        PoolId pid = key.toId();
+        (uint160 sqrtAfter,,,) = poolManager.getSlot0(pid);
         // Only refresh the reference price at block boundaries.
         // Same-block sandwich: attacker's "reset" swap and "exploit" swap share the same block
-        // -> lastSqrtPriceX96 does not update between them -> exploit swap still sees the
+        // -> _lastSqrtPriceX96[pid] does not update between them -> exploit swap still sees the
         // large inter-block price delta and pays the 1.5x volatility multiplier.
-        if (block.number > lastSwapBlock) {
-            lastSqrtPriceX96 = sqrtAfter;
-            lastSwapBlock = block.number;
+        if (block.number > _lastSwapBlock[pid]) {
+            _lastSqrtPriceX96[pid] = sqrtAfter;
+            _lastSwapBlock[pid] = block.number;
         }
     }
 
@@ -226,15 +246,16 @@ contract DynamicFeeHook is BaseHook, Ownable2Step {
     ///         and pays the 1.5x multiplier, making the attack economically
     ///         self-defeating. The reference price therefore always lags at least one
     ///         block behind the current price, preventing intra-block oracle manipulation.
-    function getVolatilityInfo()
+    function getVolatilityInfo(PoolKey calldata key)
         external
         view
         returns (uint256 thresholdBps, uint256 multiplierPct, uint160 referenceSqrtPriceX96, uint256 referenceBlock)
     {
+        PoolId pid = key.toId();
         thresholdBps = VOLATILITY_THRESHOLD_BPS;
         multiplierPct = VOLATILITY_FEE_MULTIPLIER;
-        referenceSqrtPriceX96 = lastSqrtPriceX96;
-        referenceBlock = lastSwapBlock;
+        referenceSqrtPriceX96 = _lastSqrtPriceX96[pid];
+        referenceBlock = _lastSwapBlock[pid];
     }
 
     function getStats() external view returns (uint256, uint256, address) {

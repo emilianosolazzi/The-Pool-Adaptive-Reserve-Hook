@@ -77,6 +77,15 @@ contract DynamicFeeHookTest is Test {
         assertEq(feeAmount, (amountIn * 25) / 10_000);
     }
 
+    /// Build a 1:1 mock BalanceDelta for a swap of magnitude `mag`.
+    /// Mock-land has no real swap math; we just need the unspecified-leg's
+    /// magnitude to match what the test asserts the fee against.
+    function _delta(bool zeroForOne, uint128 mag) internal pure returns (BalanceDelta) {
+        return zeroForOne
+            ? toBalanceDelta(-int128(mag), int128(mag))
+            : toBalanceDelta(int128(mag), -int128(mag));
+    }
+
     function test_beforeSwap_noFeeForMismatchedKey() public {
         PoolKey memory wrongKey = poolKey;
         wrongKey.hooks = DynamicFeeHook(payable(address(0xdead)));
@@ -102,7 +111,7 @@ contract DynamicFeeHookTest is Test {
         assertEq(hook.totalSwaps(), 1);
 
         vm.prank(address(mockManager));
-        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+        hook.afterSwap(address(this), poolKey, params, _delta(true, uint128(amountIn)), "");
 
         assertEq(mockDistributor.callCount(), 1);
         assertEq(mockDistributor.lastAmount(), expectedFee);
@@ -112,7 +121,7 @@ contract DynamicFeeHookTest is Test {
     function test_transientStorage_clearedAfterAfterSwap() public {
         uint256 amountIn = 1e18;
         uint256 fee = (amountIn * 25) / 10_000;
-        BalanceDelta delta = toBalanceDelta(0, 0);
+        BalanceDelta delta = _delta(true, uint128(amountIn));
 
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
@@ -150,23 +159,14 @@ contract DynamicFeeHookTest is Test {
                 PoolId.unwrap(otherKey.toId())
             )
         );
-        hook.afterSwap(address(this), otherKey, params, toBalanceDelta(0, 0), "");
+        hook.afterSwap(address(this), otherKey, params, _delta(true, uint128(amountIn)), "");
     }
 
-    function test_afterSwap_revertsWhenFeeExceedsReturnDeltaDomain() public {
-        uint256 amountIn = (uint256(uint128(type(int128).max)) * 10_000 / 25) + 400;
-        uint256 expectedFee = (amountIn * 25) / 10_000;
-
-        SwapParams memory params =
-            SwapParams({zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: 0});
-
-        vm.prank(address(mockManager));
-        hook.beforeSwap(address(this), poolKey, params, "");
-
-        vm.prank(address(mockManager));
-        vm.expectRevert(abi.encodeWithSelector(DynamicFeeHook.HookFeeExceedsReturnDelta.selector, expectedFee));
-        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
-    }
+    // NOTE: test_afterSwap_revertsWhenFeeExceedsReturnDeltaDomain removed.
+    // Post Finding-2 fix the fee is sized from |BalanceDelta unspec leg| (int128),
+    // capped at maxFeeBps which is itself capped at 1000 (10%). Therefore
+    // fee <= |unspec|/10 <= 2^127/10 ~= 1.7e37 << int128.max, making the
+    // HookFeeExceedsReturnDelta branch defensively unreachable.
 
     function test_afterSwap_zeroFeeStillRefreshesVolatilityReference() public {
         mockManager.setSlot0(123, 0);
@@ -178,7 +178,7 @@ contract DynamicFeeHookTest is Test {
         vm.prank(address(mockManager));
         hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
 
-        (,, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo();
+        (,, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo(poolKey);
         assertEq(refPrice, 123);
         assertEq(refBlock, block.number);
     }
@@ -197,7 +197,7 @@ contract DynamicFeeHookTest is Test {
             vm.prank(address(mockManager));
             hook.beforeSwap(address(this), poolKey, params, "");
             vm.prank(address(mockManager));
-            hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+            hook.afterSwap(address(this), poolKey, params, _delta(true, uint128(amountIn)), "");
         }
 
         assertEq(hook.totalSwaps(), swaps);
@@ -278,7 +278,7 @@ contract DynamicFeeHookTest is Test {
 
     /// getVolatilityInfo returns correct constants and zero state before any swap.
     function test_getVolatilityInfo_defaults() public view {
-        (uint256 thresholdBps, uint256 multiplierPct, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo();
+        (uint256 thresholdBps, uint256 multiplierPct, uint160 refPrice, uint256 refBlock) = hook.getVolatilityInfo(poolKey);
         assertEq(thresholdBps, 100); // 1% inter-swap price move triggers multiplier
         assertEq(multiplierPct, 150); // 1.5x fee in volatile regime
         assertEq(refPrice, 0); // no swaps have occurred yet
@@ -321,7 +321,7 @@ contract DynamicFeeHookTest is Test {
         vm.prank(address(mockManager));
         hook.beforeSwap(address(this), poolKey, params, "");
         vm.prank(address(mockManager));
-        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+        hook.afterSwap(address(this), poolKey, params, _delta(true, uint128(amountOut)), "");
 
         // Distributor was paid in the unspecified (input) currency.
         assertEq(mockDistributor.callCount(), 1, "fee not routed");
@@ -348,7 +348,7 @@ contract DynamicFeeHookTest is Test {
         vm.prank(address(mockManager));
         hook.beforeSwap(address(this), poolKey, params, "");
         vm.prank(address(mockManager));
-        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+        hook.afterSwap(address(this), poolKey, params, _delta(false, uint128(amountOut)), "");
 
         assertEq(
             Currency.unwrap(mockDistributor.lastCurrency()),
@@ -372,7 +372,7 @@ contract DynamicFeeHookTest is Test {
         vm.prank(address(mockManager));
         hook.beforeSwap(address(this), poolKey, params, "");
         vm.prank(address(mockManager));
-        hook.afterSwap(address(this), poolKey, params, toBalanceDelta(0, 0), "");
+        hook.afterSwap(address(this), poolKey, params, _delta(false, uint128(amountIn)), "");
 
         assertEq(
             Currency.unwrap(mockDistributor.lastCurrency()),

@@ -28,13 +28,13 @@ export interface Deployment {
 export const DEPLOYMENTS: Record<AppChainId, Deployment> = {
   [arbitrum.id]: {
     vault: envAddr('NEXT_PUBLIC_VAULT_ARB_ONE') ??
-      ('0x87F2db1A41A9227CBfBBC00A5AdE5770C85b3d71' as Address),
+      ('0x02D5a1340D378695D50FF7dE0F5778018952c5EA' as Address),
     hook: envAddr('NEXT_PUBLIC_HOOK_ARB_ONE') ??
-      ('0x62076C1Cb0Ea57Acd2353fF45226a1FB1e6100c4' as Address),
+      ('0x453CFf45DAC5116f8D49f7cfE6AEB56107a780c4' as Address),
     distributor: envAddr('NEXT_PUBLIC_DISTRIBUTOR_ARB_ONE') ??
-      ('0x474F59AE4699743AcC8563e7833e2bE90e7426C3' as Address),
+      ('0x9e3aAb5DdBF536c087319431afCAf2F1160942e1' as Address),
     bootstrap: envAddr('NEXT_PUBLIC_BOOTSTRAP_ARB_ONE') ??
-      ('0x2f9Ba00A0AA3533874294c55144a30Bf6a7b7a63' as Address),
+      ('0x029C2FEeB98050295C108E370fa74081ed58F978' as Address),
     poolManager: envAddr('NEXT_PUBLIC_POOL_MANAGER_ARB_ONE') ??
       ('0x360e68faccca8ca495c1b759fd9eee466db9fb32' as Address),
     asset: envAddr('NEXT_PUBLIC_ASSET_ARB_ONE') ??

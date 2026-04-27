@@ -79,22 +79,25 @@ contract IntegrationTest is Test, Deployers {
 
     function test_fullCycle_swapFeeSplitDonate() public {
         uint256 amountIn = 1 ether;
-        uint256 expectedFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
-        uint256 expectedTreasury = (expectedFee * TREASURY_SHARE) / 100;
-        uint256 expectedLP = expectedFee - expectedTreasury;
+        // Post Finding-2 fix: fee is sized from the unspecified-leg of
+        // BalanceDelta (the gross output). For a 1 ETH input through a
+        // 3000-fee LP pool the gross output is ~ 0.997 ETH, so the hook fee
+        // is ~ amountIn * HOOK_FEE_BPS / 10000 with ~0.3% downward slack.
+        uint256 ballparkFee = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
 
         uint256 treasuryBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
 
-        // Exact-input zeroForOne: caller spends token0, receives token1.
-        // Fee is on the output token (currency1).
         swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
 
+        uint256 actualFee = hook.totalFeesRouted();
         uint256 treasuryGained = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - treasuryBefore;
+        uint256 expectedTreasury = (actualFee * TREASURY_SHARE) / 100;
+        uint256 expectedLP = actualFee - expectedTreasury;
 
         assertEq(hook.totalSwaps(), 1);
-        assertEq(hook.totalFeesRouted(), expectedFee);
+        assertApproxEqRel(actualFee, ballparkFee, 0.01e18, "fee within 1% of input-based ballpark");
         assertEq(treasuryGained, expectedTreasury);
-        assertEq(distributor.totalDistributed(), expectedFee);
+        assertEq(distributor.totalDistributed(), actualFee);
         assertEq(distributor.totalToTreasury(), expectedTreasury);
         assertEq(distributor.totalToLPs(), expectedLP);
         assertEq(distributor.distributionCount(), 1);
@@ -109,16 +112,19 @@ contract IntegrationTest is Test, Deployers {
         // 25 BPS < 50 BPS cap → fee is NOT capped; cap only triggers when base > MAX_FEE_BPS.
         // Lower the cap for this test so the cap triggers.
         hook.setMaxFeeBps(20); // 20 BPS cap < 25 BPS base
-        uint256 expectedFee = (amountIn * 20) / BPS_DENOM;
-        assertTrue(uncappedFee > expectedFee, "precondition: base fee exceeds 20bps cap");
+        uint256 ballparkFee = (amountIn * 20) / BPS_DENOM;
+        assertTrue(uncappedFee > ballparkFee, "precondition: base fee exceeds 20bps cap");
 
         uint256 treasuryBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
 
         swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
 
-        uint256 expectedTreasury = (expectedFee * TREASURY_SHARE) / 100;
+        // Fee is sized from gross output (~ amountIn * 0.997 for a 3000-fee pool),
+        // then cap = output * 20/10000. Within 1% of ballpark.
+        uint256 actualFee = hook.totalFeesRouted();
+        uint256 expectedTreasury = (actualFee * TREASURY_SHARE) / 100;
 
-        assertEq(hook.totalFeesRouted(), expectedFee);
+        assertApproxEqRel(actualFee, ballparkFee, 0.02e18, "fee within 2% of input-based cap ballpark");
         assertEq(
             MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - treasuryBefore,
             expectedTreasury
@@ -129,7 +135,7 @@ contract IntegrationTest is Test, Deployers {
 
     function test_multipleSwaps_accumulateFees() public {
         uint256 amountIn = 1 ether;
-        uint256 feePerSwap = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
+        uint256 ballparkPerSwap = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
         uint256 n = 5;
 
         uint256 treasuryBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
@@ -138,16 +144,20 @@ contract IntegrationTest is Test, Deployers {
             swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
         }
 
-        uint256 totalExpectedFee = feePerSwap * n;
-        uint256 totalExpectedTreasury = (totalExpectedFee * TREASURY_SHARE) / 100;
+        uint256 actualTotalFee = hook.totalFeesRouted();
+        uint256 expectedTreasury = (actualTotalFee * TREASURY_SHARE) / 100;
 
         assertEq(hook.totalSwaps(), n);
-        assertEq(hook.totalFeesRouted(), totalExpectedFee);
+        assertApproxEqRel(actualTotalFee, ballparkPerSwap * n, 0.01e18, "aggregate fee within 1% of input-based ballpark");
         assertEq(distributor.distributionCount(), n);
-        assertEq(distributor.totalDistributed(), totalExpectedFee);
-        assertEq(
+        assertEq(distributor.totalDistributed(), actualTotalFee);
+        // Per-swap rounding (each fee*20/100 floored independently) can leave
+        // up to (n-1) wei of slack vs (actualTotalFee*20)/100.
+        assertApproxEqAbs(
             MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - treasuryBefore,
-            totalExpectedTreasury
+            expectedTreasury,
+            n,
+            "treasury within per-swap rounding slack"
         );
     }
 
@@ -155,19 +165,22 @@ contract IntegrationTest is Test, Deployers {
 
     function test_bidirectional_swapsSucceed() public {
         uint256 amountIn = 1 ether;
-        uint256 fee0 = (amountIn * HOOK_FEE_BPS) / BPS_DENOM;
 
         // zeroForOne: fee on currency1 (OUTPUT)
         uint256 t1Before = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury);
+        uint256 feesBefore0 = hook.totalFeesRouted();
         swap(poolKey, true, -int256(amountIn), ZERO_BYTES);
+        uint256 fee0 = hook.totalFeesRouted() - feesBefore0;
         uint256 t1Gained = MockERC20(Currency.unwrap(currency1)).balanceOf(treasury) - t1Before;
-        assertEq(t1Gained, (fee0 * TREASURY_SHARE) / 100);
+        assertEq(t1Gained, (fee0 * TREASURY_SHARE) / 100, "treasury share consistent zeroForOne");
 
         // oneForZero: fee on currency0 (OUTPUT)
         uint256 t0Before = MockERC20(Currency.unwrap(currency0)).balanceOf(treasury);
+        uint256 feesBefore1 = distributor.totalDistributed();
         swap(poolKey, false, -int256(amountIn), ZERO_BYTES);
+        uint256 fee1 = distributor.totalDistributed() - feesBefore1;
         uint256 t0Gained = MockERC20(Currency.unwrap(currency0)).balanceOf(treasury) - t0Before;
-        assertEq(t0Gained, (fee0 * TREASURY_SHARE) / 100);
+        assertEq(t0Gained, (fee1 * TREASURY_SHARE) / 100, "treasury share consistent oneForZero");
 
         assertEq(hook.totalSwaps(), 2);
         assertEq(distributor.distributionCount(), 2);
