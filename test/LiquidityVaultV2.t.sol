@@ -693,4 +693,162 @@ contract LiquidityVaultV2Test is Test {
         assertGt(shares, 0);
         assertEq(vault.bootstrapRewards(), address(0));
     }
+
+    // ---------------------------------------------------------------
+    // NAV pricing rule — deviation guard against navReferenceSqrtPriceX96
+    // ---------------------------------------------------------------
+
+    /// @dev Move the mocked pool spot to the price at `tick`. Bootstrap
+    ///      reference is set on the first deposit at setUp's price.
+    function _setPoolTick(int24 tick) internal {
+        mockManager.setSlot0(TickMath.getSqrtPriceAtTick(tick), tick);
+    }
+
+    /// @dev Bootstrap the NAV reference by performing a tiny deposit at the
+    ///      current pool price. After this returns, navReferenceSqrtPriceX96
+    ///      is non-zero and equal to the current spot.
+    function _bootstrapNavRef() internal {
+        usdc.mint(alice, 10e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.deposit(10e6, alice);
+        vm.stopPrank();
+        assertGt(vault.navReferenceSqrtPriceX96(), 0, "ref bootstrap failed");
+    }
+
+    function test_nav_deviation_revertsOnDeposit_aboveTolerance() public {
+        _bootstrapNavRef();
+        // Default cap is 100 bps (1% PRICE = ~50 bps in sqrt). Each tick is
+        // ~1 bps in price. Move 200 ticks up → ~2% price deviation, well
+        // beyond tolerance.
+        _setPoolTick(-198700);
+
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert(LiquidityVaultV2.NAV_PRICE_DEVIATION.selector);
+        vault.deposit(100e6, alice);
+        vm.stopPrank();
+    }
+
+    function test_nav_deviation_revertsOnRedeemAndWithdraw_aboveTolerance() public {
+        _bootstrapNavRef();
+        // Capture share balance from the bootstrap deposit.
+        uint256 shares = vault.balanceOf(alice);
+        assertGt(shares, 0);
+
+        _setPoolTick(-198700); // ~2% over reference
+
+        vm.startPrank(alice);
+        vm.expectRevert(LiquidityVaultV2.NAV_PRICE_DEVIATION.selector);
+        vault.redeem(shares, alice, alice);
+
+        vm.expectRevert(LiquidityVaultV2.NAV_PRICE_DEVIATION.selector);
+        vault.withdraw(1e6, alice, alice);
+        vm.stopPrank();
+    }
+
+    function test_nav_refreshNavReference_restoresOperations() public {
+        // Widen range so that post-refresh spot stays in-range. Liquidity
+        // deployment requires sqrtPrice within [sqrtLower, sqrtUpper).
+        vault.setInitialTicks(-199500, -198000);
+        _bootstrapNavRef();
+        _setPoolTick(-198700); // breach (>1% price deviation, still in range)
+
+        // Deposit blocked.
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.expectRevert(LiquidityVaultV2.NAV_PRICE_DEVIATION.selector);
+        vault.deposit(100e6, alice);
+        vm.stopPrank();
+
+        // Owner re-anchors to the new spot.
+        vault.refreshNavReference();
+        assertEq(vault.navReferenceSqrtPriceX96(), TickMath.getSqrtPriceAtTick(-198700));
+
+        // Now the deposit succeeds.
+        vm.startPrank(alice);
+        uint256 shares = vault.deposit(100e6, alice);
+        vm.stopPrank();
+        assertGt(shares, 0);
+    }
+
+    function test_nav_withinTolerance_priceMovementWorks() public {
+        _bootstrapNavRef();
+        // Move only ~30 ticks (~0.3% price) — well inside the 1% tolerance.
+        _setPoolTick(-198870);
+
+        usdc.mint(alice, 100e6);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        uint256 shares = vault.deposit(100e6, alice);
+        vm.stopPrank();
+        assertGt(shares, 0);
+    }
+
+    function test_nav_oorClamp_doesNotOverquoteOtherToken() public {
+        _bootstrapNavRef();
+        // Open the deviation cap so we can push the pool well out of range
+        // without tripping the guard. The clamp is what we're verifying here,
+        // not the deviation gate.
+        vault.setMaxNavDeviationBps(2000);
+        // Push spot ABOVE sqrtUpper. Default range is [-199020, -198840];
+        // jumping to tick -198000 puts spot well above sqrtUpper.
+        _setPoolTick(-198000);
+
+        // Mint a large slug of WETH directly to the vault as idle other-token.
+        uint256 wethAmount = 1 ether;
+        weth.mint(address(vault), wethAmount);
+
+        // Compute expected clamp: other-token quoted at the range edge
+        // (sqrtUpper), not at the unclamped spot.
+        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(vault.tickUpper());
+        // weth address < usdc address by chance? Compute layout dynamically.
+        bool wethIsToken0 = address(weth) < address(usdc);
+        uint256 expectedClamped;
+        if (wethIsToken0) {
+            // other (token0) → asset (token1): quote = amt0 * sqrt^2 / 2^192.
+            uint256 q96 = 1 << 96;
+            uint256 part = FullMathLite.mulDiv(wethAmount, uint256(sqrtUpper), q96);
+            expectedClamped = FullMathLite.mulDiv(part, uint256(sqrtUpper), q96);
+        } else {
+            // other (token1) → asset (token0): quote = amt1 * 2^192 / sqrt^2.
+            uint256 q96 = 1 << 96;
+            uint256 part = FullMathLite.mulDiv(wethAmount, q96, uint256(sqrtUpper));
+            expectedClamped = FullMathLite.mulDiv(part, q96, uint256(sqrtUpper));
+        }
+
+        uint256 idleAsset = usdc.balanceOf(address(vault));
+        uint256 totalA = vault.totalAssets();
+        // No active position, no reserve hook proceeds: totalAssets ==
+        // idleAsset + clamped(other).
+        assertEq(totalA, idleAsset + expectedClamped, "OOR-clamp must pin other-token quote to range edge");
+
+        // Sanity: an unclamped spot quote would be strictly larger because
+        // spot > sqrtUpper and price = sqrt^2 is monotone increasing.
+        uint160 sqrtSpot = TickMath.getSqrtPriceAtTick(-198000);
+        uint256 unclamped;
+        if (wethIsToken0) {
+            uint256 q96 = 1 << 96;
+            uint256 part = FullMathLite.mulDiv(wethAmount, uint256(sqrtSpot), q96);
+            unclamped = FullMathLite.mulDiv(part, uint256(sqrtSpot), q96);
+        } else {
+            uint256 q96 = 1 << 96;
+            uint256 part = FullMathLite.mulDiv(wethAmount, q96, uint256(sqrtSpot));
+            unclamped = FullMathLite.mulDiv(part, q96, uint256(sqrtSpot));
+        }
+        if (wethIsToken0) {
+            assertGt(unclamped, expectedClamped, "spot-based quote exceeds clamp");
+        } else {
+            assertLt(unclamped, expectedClamped, "OOR-up makes 1->0 quote shrink; clamp protects");
+        }
+    }
+}
+
+/// @dev Minimal mulDiv helper to avoid pulling FullMath into the test file.
+library FullMathLite {
+    function mulDiv(uint256 a, uint256 b, uint256 d) internal pure returns (uint256) {
+        return (a * b) / d;
+    }
 }

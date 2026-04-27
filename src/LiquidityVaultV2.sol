@@ -93,6 +93,39 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     ///         contract can never DoS deposits or withdrawals.
     address public bootstrapRewards;
 
+    // ---------------------------------------------------------------
+    // NAV pricing rule
+    // ---------------------------------------------------------------
+    //
+    // `totalAssets()` quotes the non-asset side at the pool's live
+    // sqrt-price. A single-tx attacker who can move the pool spot far
+    // enough to skew NAV inside the same call can mint/redeem shares at
+    // a manipulated price. We defend with a deviation guard: every NAV
+    // computation compares the live spot against a stored reference and
+    // reverts if they disagree by more than `maxNavDeviationBps` of
+    // PRICE (token1/token0, i.e. sqrt^2). The reference is bootstrapped
+    // on the first deposit/mint/withdraw/redeem after the pool has a
+    // slot0, and the owner can re-anchor it explicitly via
+    // `refreshNavReference()` after a legitimate price move.
+    //
+    // We use a min-of-two pricing rule deliberately NOT — a lower NAV
+    // benefits depositors at the expense of existing LPs. Symmetric
+    // deviation revert is the correct conservative behaviour: under
+    // manipulation, NOBODY can deposit or redeem until the price normalises
+    // or the owner re-anchors.
+
+    /// @notice Reference sqrt-price the NAV deviation guard checks against.
+    ///         0 means "unset" — the next deposit/withdraw will bootstrap it.
+    uint160 public navReferenceSqrtPriceX96;
+
+    /// @notice Max permitted PRICE deviation between live spot and the NAV
+    ///         reference, expressed in basis points. Default 100 bps = 1%.
+    uint256 public maxNavDeviationBps = 100;
+
+    /// @notice Hard cap on `maxNavDeviationBps` to keep the guard meaningful.
+    ///         2000 bps = 20%; values above this are rejected.
+    uint256 public constant MAX_NAV_DEVIATION_CAP_BPS = 2000;
+
     enum VaultStatus {
         UNCONFIGURED,
         PAUSED,
@@ -122,6 +155,10 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     event ReserveProceedsCollected(address indexed currency, uint256 amount);
     event BootstrapRewardsUpdated(address indexed oldRewards, address indexed newRewards);
     event BootstrapPokeFailed(address indexed user, bytes reason);
+    event NavReferenceRefreshed(uint160 oldRef, uint160 newRef);
+    event MaxNavDeviationBpsUpdated(uint256 oldBps, uint256 newBps);
+
+    error NAV_PRICE_DEVIATION();
 
     constructor(
         IERC20 _asset,
@@ -149,7 +186,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 idleAsset = IERC20(asset()).balanceOf(address(this));
         if (!_poolKeySet) return idleAsset;
 
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
+        uint160 sqrtPriceX96 = _navSqrtPriceX96();
         if (sqrtPriceX96 == 0) return idleAsset;
 
         uint256 amt0;
@@ -188,14 +225,83 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
             }
         }
 
+        // Idle / pending / escrow other-token gets quoted at a price
+        // CLAMPED to [sqrtLower, sqrtUpper]. When the pool is OOR the
+        // unclamped spot can over- or under-value held inventory; clamping
+        // pins the quote to the range edge, the same price at which the
+        // position itself would be valued.
+        uint256 quoteSqrt = _clampQuotePrice(sqrtPriceX96);
+
         if (assetIsToken0) {
-            uint256 otherTotal = amt1 + idleOther + pendingOther + escrowOther;
-            uint256 otherInAsset = _quoteToken1ToToken0(otherTotal, uint256(sqrtPriceX96));
-            return idleAsset + pendingAsset + escrowAsset + amt0 + otherInAsset;
+            uint256 otherTotal = idleOther + pendingOther + escrowOther;
+            uint256 otherInAssetClamped = _quoteToken1ToToken0(otherTotal, quoteSqrt);
+            uint256 amt1InAsset = _quoteToken1ToToken0(amt1, uint256(sqrtPriceX96));
+            return idleAsset + pendingAsset + escrowAsset + amt0 + amt1InAsset + otherInAssetClamped;
         } else {
-            uint256 otherTotal = amt0 + idleOther + pendingOther + escrowOther;
-            uint256 otherInAsset = _quoteToken0ToToken1(otherTotal, uint256(sqrtPriceX96));
-            return idleAsset + pendingAsset + escrowAsset + amt1 + otherInAsset;
+            uint256 otherTotal = idleOther + pendingOther + escrowOther;
+            uint256 otherInAssetClamped = _quoteToken0ToToken1(otherTotal, quoteSqrt);
+            uint256 amt0InAsset = _quoteToken0ToToken1(amt0, uint256(sqrtPriceX96));
+            return idleAsset + pendingAsset + escrowAsset + amt1 + amt0InAsset + otherInAssetClamped;
+        }
+    }
+
+    /// @dev Live spot, deviation-guarded against `navReferenceSqrtPriceX96`.
+    ///      Returns 0 if the pool's slot0 is uninitialised. When the
+    ///      reference is unset the live spot passes through unchecked
+    ///      (bootstrap path); deposit/withdraw entrypoints set the
+    ///      reference on first use.
+    function _navSqrtPriceX96() internal view returns (uint160) {
+        (uint160 spot,,,) = poolManager.getSlot0(poolKey.toId());
+        if (spot == 0) return 0;
+        uint160 ref = navReferenceSqrtPriceX96;
+        if (ref == 0) return spot;
+        if (!_priceWithinTolerance(spot, ref, maxNavDeviationBps)) {
+            revert NAV_PRICE_DEVIATION();
+        }
+        return spot;
+    }
+
+    /// @dev True when |spot^2 - ref^2| / ref^2 <= bps / 10000.
+    ///      All math via FullMath to avoid 320-bit overflow on uint160 squared.
+    function _priceWithinTolerance(uint160 spot, uint160 ref, uint256 bps) internal pure returns (bool) {
+        // Shift down by 64 bits before squaring so each squared value fits
+        // in uint256 with plenty of headroom (sqrt is uint160, sqrt^2 is
+        // up to 2^320, sqrt^2/2^64 fits in 256).
+        uint256 spotSq = FullMath.mulDiv(uint256(spot), uint256(spot), 1 << 64);
+        uint256 refSq = FullMath.mulDiv(uint256(ref), uint256(ref), 1 << 64);
+        uint256 diff = spotSq > refSq ? spotSq - refSq : refSq - spotSq;
+        // tolerance = refSq * bps / 10000 — use FullMath to avoid overflow.
+        uint256 tol = FullMath.mulDiv(refSq, bps, 10_000);
+        return diff <= tol;
+    }
+
+    /// @dev Clamp `sqrt` to the position's range edges. Used only for
+    ///      idle/pending/escrow other-token valuation; the position-leg
+    ///      math always uses the unclamped (deviation-guarded) spot.
+    function _clampQuotePrice(uint160 sqrtP) internal view returns (uint256) {
+        uint160 sqrtA = TickMath.getSqrtPriceAtTick(tickLower);
+        uint160 sqrtB = TickMath.getSqrtPriceAtTick(tickUpper);
+        if (sqrtP < sqrtA) return uint256(sqrtA);
+        if (sqrtP > sqrtB) return uint256(sqrtB);
+        return uint256(sqrtP);
+    }
+
+    /// @dev Lazily bootstrap `navReferenceSqrtPriceX96` from the current
+    ///      spot if it has never been set, then assert deviation tolerance.
+    ///      Called from every entrypoint that mints or burns shares so the
+    ///      reference is always live before NAV-dependent math runs.
+    function _bootstrapAndCheckNav() internal {
+        if (!_poolKeySet) return;
+        (uint160 spot,,,) = poolManager.getSlot0(poolKey.toId());
+        if (spot == 0) return;
+        uint160 ref = navReferenceSqrtPriceX96;
+        if (ref == 0) {
+            navReferenceSqrtPriceX96 = spot;
+            emit NavReferenceRefreshed(0, spot);
+            return;
+        }
+        if (!_priceWithinTolerance(spot, ref, maxNavDeviationBps)) {
+            revert NAV_PRICE_DEVIATION();
         }
     }
 
@@ -252,6 +358,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     function deposit(uint256 assets, address receiver) public override nonReentrant whenNotPaused returns (uint256) {
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         if (maxTVL > 0) require(totalAssets() + assets <= maxTVL, "TVL_CAP");
         if (balanceOf(receiver) == 0) totalDepositors++;
@@ -270,6 +377,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         returns (uint256 assets)
     {
         require(_poolKeySet, "POOL_KEY_NOT_SET");
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         assets = previewMint(shares);
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
@@ -298,6 +406,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         require(assets >= MIN_DEPOSIT, "MIN_DEPOSIT");
         require(_poolKeySet, "POOL_KEY_NOT_SET");
         require(assetsToSwap <= assets, "SWAP_TOO_LARGE");
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         if (maxTVL > 0) require(totalAssets() + assets <= maxTVL, "TVL_CAP");
 
@@ -346,6 +455,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         whenNotPaused
         returns (uint256 shares)
     {
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         shares = previewWithdraw(assets);
         _prepareWithdraw(assets);
@@ -361,6 +471,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         whenNotPaused
         returns (uint256 assets)
     {
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         assets = previewRedeem(shares);
         _prepareWithdraw(assets);
@@ -377,6 +488,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 minAssetOut,
         uint256 deadline
     ) external nonReentrant whenNotPaused returns (uint256 shares) {
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         shares = previewWithdraw(assets);
         _prepareWithdraw(assets);
@@ -394,6 +506,7 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 minAssetOut,
         uint256 deadline
     ) external nonReentrant whenNotPaused returns (uint256 assets) {
+        _bootstrapAndCheckNav();
         _pullReserveProceedsBoth();
         assets = previewRedeem(shares);
         _prepareWithdraw(assets);
@@ -668,6 +781,27 @@ contract LiquidityVaultV2 is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         require(newRewards == address(0) || newRewards.code.length > 0, "NOT_CONTRACT");
         emit BootstrapRewardsUpdated(bootstrapRewards, newRewards);
         bootstrapRewards = newRewards;
+    }
+
+    /// @notice Re-anchor `navReferenceSqrtPriceX96` to the current pool spot.
+    ///         Use after a legitimate price move has tripped the deviation
+    ///         guard. Owner-only because re-anchoring effectively re-prices
+    ///         pending deposits/redemptions; it must not be permissionless.
+    function refreshNavReference() external onlyOwner {
+        require(_poolKeySet, "POOL_KEY_NOT_SET");
+        (uint160 spot,,,) = poolManager.getSlot0(poolKey.toId());
+        require(spot != 0, "POOL_NOT_INIT");
+        uint160 old = navReferenceSqrtPriceX96;
+        navReferenceSqrtPriceX96 = spot;
+        emit NavReferenceRefreshed(old, spot);
+    }
+
+    /// @notice Update the NAV deviation tolerance. Bps of PRICE deviation
+    ///         (token1/token0). Capped at MAX_NAV_DEVIATION_CAP_BPS.
+    function setMaxNavDeviationBps(uint256 newBps) external onlyOwner {
+        require(newBps <= MAX_NAV_DEVIATION_CAP_BPS, "BPS_TOO_HIGH");
+        emit MaxNavDeviationBpsUpdated(maxNavDeviationBps, newBps);
+        maxNavDeviationBps = newBps;
     }
 
     /// @notice Escrow vault inventory at the hook as a reserve offer.
