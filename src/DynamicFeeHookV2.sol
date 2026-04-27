@@ -97,6 +97,22 @@ contract DynamicFeeHookV2 is BaseHook, Ownable2Step, ReentrancyGuard {
     uint256 public totalReserveFills;
     uint256 public totalReserveSold;   // diagnostics; in sellCurrency units (not normalised)
 
+    /// @notice Cumulative un-distributed fee amount per currency. Increments
+    ///         every time `feeDistributor.distribute()` reverts (the fee
+    ///         tokens have already been transferred to the distributor at
+    ///         that point, but the distributor's internal accounting did not
+    ///         update). Operator workflow:
+    ///           1. Fix the underlying cause (e.g. set distributor pool key,
+    ///              repair treasury config).
+    ///           2. Call `FeeDistributor.retryDistribute(currency, amount)`
+    ///              OR `FeeDistributor.sweepUndistributed(...)` to move the
+    ///              parked tokens.
+    ///           3. Call `acknowledgeFailedDistribution(currency, amount)`
+    ///              here to clear the tally so this view stays accurate.
+    ///         This is the canonical on-chain query for "how much fee revenue
+    ///         is parked at the distributor pending operator recovery".
+    mapping(address => uint256) public failedDistribution;
+
     event FeeRouted(address indexed currency, uint256 amount, uint256 swapIndex);
     event DistributorUpdated(address indexed old, address indexed newDistributor);
     event MaxFeeBpsUpdated(uint256 oldBps, uint256 newBps);
@@ -132,6 +148,12 @@ contract DynamicFeeHookV2 is BaseHook, Ownable2Step, ReentrancyGuard {
     ///         vector. Operator must fix the distributor and recover via
     ///         its admin path (sweep / re-distribute).
     event FeeDistributionFailed(address indexed currency, uint256 amount, uint256 swapIndex);
+
+    /// @notice Emitted when the owner acknowledges that a previously-failed
+    ///         distribution has been recovered out-of-band (via the
+    ///         distributor's `retryDistribute` or `sweepUndistributed`).
+    ///         Pure bookkeeping; no token movement.
+    event FailedDistributionAcknowledged(address indexed currency, uint256 amount, address indexed by);
 
     constructor(IPoolManager _poolManager, address _distributor, address _owner)
         BaseHook(_poolManager)
@@ -506,6 +528,7 @@ contract DynamicFeeHookV2 is BaseHook, Ownable2Step, ReentrancyGuard {
             try feeDistributor.distribute(feeCurrency, fee) {
                 // distributed
             } catch {
+                failedDistribution[Currency.unwrap(feeCurrency)] += fee;
                 emit FeeDistributionFailed(Currency.unwrap(feeCurrency), fee, totalSwaps);
             }
         }
@@ -606,6 +629,22 @@ contract DynamicFeeHookV2 is BaseHook, Ownable2Step, ReentrancyGuard {
     function setFeeDistributor(address newDistributor) external onlyOwner {
         emit DistributorUpdated(address(feeDistributor), newDistributor);
         feeDistributor = IFeeDistributorV2(newDistributor);
+    }
+
+    /// @notice Owner-only bookkeeping: clear `amount` from
+    ///         `failedDistribution[currency]` after the operator has
+    ///         physically recovered the parked tokens via the distributor's
+    ///         `retryDistribute` or `sweepUndistributed`. No token movement
+    ///         happens here; this only keeps the on-chain unresolved-fee
+    ///         tally accurate. Reverts on under-flow so the tally cannot go
+    ///         negative or be over-acknowledged.
+    function acknowledgeFailedDistribution(Currency currency, uint256 amount) external onlyOwner {
+        require(amount > 0, "ZERO_AMOUNT");
+        address c = Currency.unwrap(currency);
+        uint256 outstanding = failedDistribution[c];
+        require(amount <= outstanding, "AMOUNT_EXCEEDS_FAILED");
+        unchecked { failedDistribution[c] = outstanding - amount; }
+        emit FailedDistributionAcknowledged(c, amount, msg.sender);
     }
 
     function getStats() external view returns (uint256, uint256, address, uint256, uint256) {

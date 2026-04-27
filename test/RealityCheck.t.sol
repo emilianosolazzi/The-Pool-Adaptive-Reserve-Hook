@@ -384,6 +384,115 @@ contract RealityCheckTest is Test, Deployers {
     }
 
     // -----------------------------------------------------------------
+    // Hardening — failedDistribution tally + acknowledge bookkeeping.
+    //
+    // The hook tracks unresolved fees in `failedDistribution[currency]` so
+    // operators have a deterministic on-chain query for "how much is parked
+    // at the distributor pending recovery". `acknowledgeFailedDistribution`
+    // is the bookkeeping primitive operators call AFTER they've physically
+    // recovered tokens via FeeDistributor.retryDistribute / sweepUndistributed.
+    // -----------------------------------------------------------------
+    function test_reality_failedDistribution_tallyAccumulates() public {
+        RevertingDistributor bad = new RevertingDistributor();
+        hook.setFeeDistributor(address(bad));
+
+        // Direction true = zeroForOne, exact input -> fee paid in unspecified
+        // (currency1 here). Run two swaps so we can watch the tally accumulate.
+        uint256 routedBefore = hook.totalFeesRouted();
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        uint256 firstFailed = hook.failedDistribution(Currency.unwrap(currency1));
+        assertGt(firstFailed, 0, "tally must increment on first failure");
+        assertEq(firstFailed, hook.totalFeesRouted() - routedBefore, "tally == routed delta");
+
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        uint256 secondFailed = hook.failedDistribution(Currency.unwrap(currency1));
+        assertGt(secondFailed, firstFailed, "tally must keep accumulating");
+        assertEq(secondFailed, hook.totalFeesRouted() - routedBefore, "tally tracks cumulative routed");
+    }
+
+    function test_reality_acknowledgeFailedDistribution_clearsTally() public {
+        RevertingDistributor bad = new RevertingDistributor();
+        hook.setFeeDistributor(address(bad));
+
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        uint256 outstanding = hook.failedDistribution(Currency.unwrap(currency1));
+        assertGt(outstanding, 0);
+
+        // Operator has, off-chain, called retryDistribute / sweepUndistributed
+        // on the (now-fixed) distributor. They acknowledge the recovery here.
+        hook.acknowledgeFailedDistribution(currency1, outstanding);
+        assertEq(hook.failedDistribution(Currency.unwrap(currency1)), 0, "tally cleared");
+
+        // Partial acknowledgement also works.
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        uint256 newOutstanding = hook.failedDistribution(Currency.unwrap(currency1));
+        hook.acknowledgeFailedDistribution(currency1, newOutstanding / 2);
+        assertEq(
+            hook.failedDistribution(Currency.unwrap(currency1)),
+            newOutstanding - newOutstanding / 2,
+            "partial ack decrements correctly"
+        );
+    }
+
+    function test_reality_acknowledgeFailedDistribution_overAmountReverts() public {
+        RevertingDistributor bad = new RevertingDistributor();
+        hook.setFeeDistributor(address(bad));
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+
+        uint256 outstanding = hook.failedDistribution(Currency.unwrap(currency1));
+        vm.expectRevert(bytes("AMOUNT_EXCEEDS_FAILED"));
+        hook.acknowledgeFailedDistribution(currency1, outstanding + 1);
+    }
+
+    function test_reality_acknowledgeFailedDistribution_zeroAmountReverts() public {
+        vm.expectRevert(bytes("ZERO_AMOUNT"));
+        hook.acknowledgeFailedDistribution(currency1, 0);
+    }
+
+    function test_reality_acknowledgeFailedDistribution_nonOwnerReverts() public {
+        RevertingDistributor bad = new RevertingDistributor();
+        hook.setFeeDistributor(address(bad));
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        hook.acknowledgeFailedDistribution(currency1, 1);
+    }
+
+    function test_reality_failedDistribution_recoveryFlow_endToEnd() public {
+        // Stage 1: distributor broken, fees fail to distribute.
+        RevertingDistributor bad = new RevertingDistributor();
+        hook.setFeeDistributor(address(bad));
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        uint256 outstanding = hook.failedDistribution(Currency.unwrap(currency1));
+        assertGt(outstanding, 0);
+
+        // Stage 2: fees are physically parked on the broken distributor.
+        // Operator deploys a fresh good distributor. The parked tokens are
+        // stuck on `bad`; they have to be sweep-recovered out-of-band by the
+        // bad distributor's owner (here we just simulate the operator moving
+        // them to treasury via vm.prank — RevertingDistributor has no admin
+        // path, which is exactly why the production FeeDistributor exposes
+        // sweepUndistributed/retryDistribute).
+        //
+        // Stage 3: operator points hook back at a working distributor and
+        // acknowledges the recovered amount on the hook.
+        hook.setFeeDistributor(address(distributor));
+        hook.acknowledgeFailedDistribution(currency1, outstanding);
+        assertEq(hook.failedDistribution(Currency.unwrap(currency1)), 0, "fully recovered");
+
+        // Stage 4: subsequent swaps distribute normally — no stale tally.
+        uint256 distCallsBefore = distributor.distributionCount();
+        swap(poolKey, true, -int256(1 ether), ZERO_BYTES);
+        assertEq(
+            hook.failedDistribution(Currency.unwrap(currency1)),
+            0,
+            "tally stays 0 once distributor is healthy"
+        );
+        assertGt(distributor.distributionCount(), distCallsBefore, "good distributor invoked");
+    }
+
+    // -----------------------------------------------------------------
     // Hardening — registerVault explicitly rejects native ETH currencies.
     // -----------------------------------------------------------------
     function test_reality_registerVault_rejectsNativeCurrency() public {
