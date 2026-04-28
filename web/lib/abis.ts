@@ -277,3 +277,135 @@ export const permit2Abi = [
     outputs: [],
   },
 ] as const satisfies Abi;
+
+// DynamicFeeHookV2 — public reads + reserve-desk events. Used by ReserveStatus
+// (the public transparency dashboard) and any future owner admin panel.
+export const hookAbi = [
+  // Counters / diagnostics
+  { type: 'function', name: 'totalSwaps', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalFeesRouted', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalReserveFills', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalReserveSold', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'feeDistributor', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  // Reserve-offer reads (PoolKey-keyed)
+  {
+    type: 'function',
+    name: 'offerActive',
+    stateMutability: 'view',
+    inputs: [{ name: 'key', type: 'tuple', components: [
+      { name: 'currency0', type: 'address' },
+      { name: 'currency1', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+      { name: 'tickSpacing', type: 'int24' },
+      { name: 'hooks', type: 'address' },
+    ] }],
+    outputs: [{ type: 'bool' }],
+  },
+  {
+    type: 'function',
+    name: 'getOffer',
+    stateMutability: 'view',
+    inputs: [{ name: 'key', type: 'tuple', components: [
+      { name: 'currency0', type: 'address' },
+      { name: 'currency1', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+      { name: 'tickSpacing', type: 'int24' },
+      { name: 'hooks', type: 'address' },
+    ] }],
+    outputs: [{ type: 'tuple', components: [
+      { name: 'sellCurrency', type: 'address' },
+      { name: 'buyCurrency', type: 'address' },
+      { name: 'sellRemaining', type: 'uint128' },
+      { name: 'vaultSqrtPriceX96', type: 'uint160' },
+      { name: 'expiry', type: 'uint64' },
+      { name: 'sellingCurrency1', type: 'bool' },
+      { name: 'active', type: 'bool' },
+      { name: 'pricingMode', type: 'uint8' },
+    ] }],
+  },
+  {
+    type: 'function',
+    name: 'getOfferHealth',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'key', type: 'tuple', components: [
+        { name: 'currency0', type: 'address' },
+        { name: 'currency1', type: 'address' },
+        { name: 'fee', type: 'uint24' },
+        { name: 'tickSpacing', type: 'int24' },
+        { name: 'hooks', type: 'address' },
+      ] },
+      { name: 'vault', type: 'address' },
+    ],
+    outputs: [
+      { name: 'active', type: 'bool' },
+      { name: 'driftBps', type: 'int256' },
+      { name: 'escrow0', type: 'uint256' },
+      { name: 'escrow1', type: 'uint256' },
+      { name: 'proceeds0', type: 'uint256' },
+      { name: 'proceeds1', type: 'uint256' },
+      { name: 'vaultSqrtPriceX96', type: 'uint160' },
+      { name: 'poolSqrtPriceX96', type: 'uint160' },
+    ],
+  },
+  // Events — used by usePublicClient.getLogs for the transparency feed.
+  {
+    type: 'event',
+    name: 'ReserveOfferCreated',
+    inputs: [
+      { name: 'poolId', type: 'bytes32', indexed: true },
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'sellCurrency', type: 'address', indexed: false },
+      { name: 'sellAmount', type: 'uint128', indexed: false },
+      { name: 'vaultSqrtPriceX96', type: 'uint160', indexed: false },
+      { name: 'expiry', type: 'uint64', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ReserveOfferMode',
+    inputs: [
+      { name: 'poolId', type: 'bytes32', indexed: true },
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'mode', type: 'uint8', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ReserveOfferCancelled',
+    inputs: [
+      { name: 'poolId', type: 'bytes32', indexed: true },
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'returnedAmount', type: 'uint128', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ReserveFilled',
+    inputs: [
+      { name: 'poolId', type: 'bytes32', indexed: true },
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'sellAmount', type: 'uint256', indexed: false },
+      { name: 'buyAmount', type: 'uint256', indexed: false },
+      { name: 'poolSqrtPriceX96', type: 'uint160', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ReserveProceedsClaimed',
+    inputs: [
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'currency', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ReserveOfferStale',
+    inputs: [
+      { name: 'poolId', type: 'bytes32', indexed: true },
+      { name: 'vault', type: 'address', indexed: true },
+      { name: 'driftBps', type: 'int256', indexed: false },
+    ],
+  },
+] as const satisfies Abi;

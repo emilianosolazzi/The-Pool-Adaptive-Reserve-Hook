@@ -11,6 +11,7 @@ import { BootstrapPanel } from '@/components/BootstrapPanel';
 import { SwapPanel } from '@/components/SwapPanel';
 import { HowItWorks } from '@/components/HowItWorks';
 import { Footer } from '@/components/Footer';
+import { ReserveStatus } from '@/components/ReserveStatus';
 import { DEFAULT_CHAIN_ID, getDeployment, type AppChainId } from '@/lib/deployments';
 
 export default function HomePage() {
@@ -60,6 +61,12 @@ export default function HomePage() {
         />
 
         <SwapPanel
+          deployment={deployment}
+          chainId={activeChainId}
+          explorerBase={explorerBase}
+        />
+
+        <ReserveStatus
           deployment={deployment}
           chainId={activeChainId}
           explorerBase={explorerBase}
