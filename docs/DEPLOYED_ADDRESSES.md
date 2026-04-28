@@ -14,7 +14,12 @@
 | VaultLP   (library)   | `0xC181cBFae6f1457fE7bb25dc9F0161E01A182A2a` |
 | LiquidityVaultV2      | `0xf79c2dc829cd3a2d8ceec353bdb1b2414ba1eee0` |
 | VaultLens             | `0x12e86890b75fdee22a35be66550373936d883551` |
-| Bootstrap             | _not yet deployed for V2.1_                  |
+| BootstrapRewards      | `0x3E6Ed05c1140612310DDE0d0DDaAcCA6e0d7a03d` |
+
+> BootstrapRewards wired Apr 28 2026 (block 457108969):
+> `programStart = 1777348921`, `programEnd = 1792900921` (180 days, 6×30d epochs).
+> `FeeDistributor.treasury = bootstrap`; `bootstrap.realTreasury = Ledger`.
+> `LiquidityVaultV2.bootstrapRewards = bootstrap` (auto-poke on share moves).
 
 ### Pool & infrastructure (canonical, unchanged)
 
@@ -42,6 +47,7 @@ NEXT_PUBLIC_VAULT_ARB_ONE=0xf79c2dc829cd3a2d8ceec353bdb1b2414ba1eee0
 NEXT_PUBLIC_VAULT_LENS_ARB_ONE=0x12e86890b75fdee22a35be66550373936d883551
 NEXT_PUBLIC_HOOK_ARB_ONE=0x486579DE6391053Df88a073CeBd673dd545200cC
 NEXT_PUBLIC_DISTRIBUTOR_ARB_ONE=0x5757DA9014EE91055b244322a207EE6F066378B0
+NEXT_PUBLIC_BOOTSTRAP_ARB_ONE=0x3E6Ed05c1140612310DDE0d0DDaAcCA6e0d7a03d
 NEXT_PUBLIC_POOL_MANAGER_ARB_ONE=0x360e68faccca8ca495c1b759fd9eee466db9fb32
 NEXT_PUBLIC_ASSET_ARB_ONE=0xaf88d065e77c8cC2239327C5EDb3A432268e5831
 NEXT_PUBLIC_ASSET_SYMBOL=USDC

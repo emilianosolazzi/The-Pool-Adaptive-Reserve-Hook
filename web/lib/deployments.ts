@@ -37,8 +37,9 @@ export const DEPLOYMENTS: Record<AppChainId, Deployment> = {
       ('0x486579DE6391053Df88a073CeBd673dd545200cC' as Address),
     distributor: envAddr('NEXT_PUBLIC_DISTRIBUTOR_ARB_ONE') ??
       ('0x5757DA9014EE91055b244322a207EE6F066378B0' as Address),
-    // Bootstrap not yet deployed for V2.1 — leave env-only, no fallback.
-    bootstrap: envAddr('NEXT_PUBLIC_BOOTSTRAP_ARB_ONE'),
+    // BootstrapRewards (V2.1, Apr 28 2026, programStart 1777348921, 180 days).
+    bootstrap: envAddr('NEXT_PUBLIC_BOOTSTRAP_ARB_ONE') ??
+      ('0x3E6Ed05c1140612310DDE0d0DDaAcCA6e0d7a03d' as Address),
     poolManager: envAddr('NEXT_PUBLIC_POOL_MANAGER_ARB_ONE') ??
       ('0x360e68faccca8ca495c1b759fd9eee466db9fb32' as Address),
     asset: envAddr('NEXT_PUBLIC_ASSET_ARB_ONE') ??
