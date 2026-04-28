@@ -331,10 +331,9 @@ export function ReserveStatus({ deployment, chainId, explorerBase }: Props) {
               />
               <Field
                 label="Side"
-                value={offer.sellingCurrency1 ? 'token1 → token0' : 'token0 → token1'}
-                sub={`fills only when ${
-                  offer.sellingCurrency1 ? 'zeroForOne' : 'oneForZero'
-                } swaps cross the gate`}
+                value={`${sellSymbol} → ${buySymbol}`}
+                sub={`Vault sells ${sellSymbol} for ${buySymbol}. Fills on ${buySymbol} → ${sellSymbol} swaps.`}
+                tech={offer.sellingCurrency1 ? 'zeroForOne fills' : 'oneForZero fills'}
               />
             </div>
           ) : (
@@ -429,11 +428,13 @@ function Field({
   value,
   sub,
   tone,
+  tech,
 }: {
   label: string;
   value: string;
   sub?: string;
   tone?: 'ok' | 'warn';
+  tech?: string;
 }) {
   const valueClass =
     tone === 'warn'
@@ -445,7 +446,12 @@ function Field({
     <div>
       <div className="stat-label">{label}</div>
       <div className={`mt-1 font-mono text-lg font-semibold ${valueClass}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-zinc-500">{sub}</div>}
+      {sub && <div className="mt-0.5 text-xs text-zinc-300/80">{sub}</div>}
+      {tech && (
+        <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-zinc-500">
+          {tech}
+        </div>
+      )}
     </div>
   );
 }
