@@ -62,6 +62,35 @@ export const vaultAbi = [
   { type: 'function', name: 'maxTVL', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'performanceFeeBps', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'paused', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  { type: 'function', name: 'owner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  // Owner-only reserve-desk writes
+  {
+    type: 'function',
+    name: 'rebalanceOfferWithMode',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'sellCurrency', type: 'address' },
+      { name: 'newSellAmount', type: 'uint128' },
+      { name: 'newSqrtPriceX96', type: 'uint160' },
+      { name: 'expiry', type: 'uint64' },
+      { name: 'mode', type: 'uint8' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'cancelReserveOffer',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'sellCurrency', type: 'address' }],
+    outputs: [{ name: 'returned', type: 'uint128' }],
+  },
+  {
+    type: 'function',
+    name: 'collectReserveProceeds',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'currency', type: 'address' }],
+    outputs: [{ name: 'amount', type: 'uint256' }],
+  },
   // Pool key (set once after deployment)
   { type: 'function', name: 'poolKey', stateMutability: 'view', inputs: [], outputs: [{ type: 'tuple', components: [
     { name: 'currency0', type: 'address' },
