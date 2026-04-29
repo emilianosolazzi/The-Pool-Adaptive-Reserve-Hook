@@ -59,8 +59,8 @@ const MIN_SELL_AMOUNT = BigInt(process.env.MIN_SELL_AMOUNT ?? '1000000');
 // Reject obviously broken configurations at startup so a typo in env
 // can never produce a write that the contract will accept but is
 // economically nonsensical (e.g. 0% spread, 100%+ of idle, 0 TTL).
-if (SPREAD_BPS >= 20_000n) {
-  throw new Error(`SPREAD_BPS=${SPREAD_BPS} too large (must be < 20000)`);
+if (SPREAD_BPS === 0n || SPREAD_BPS >= 20_000n) {
+  throw new Error(`SPREAD_BPS=${SPREAD_BPS} out of range (must be in (0, 20000))`);
 }
 if (MAX_OFFER_BPS_OF_IDLE === 0n || MAX_OFFER_BPS_OF_IDLE > 10_000n) {
   throw new Error(
@@ -463,7 +463,10 @@ async function tick() {
       args: [poolKey],
     });
     const nowSec = BigInt(Math.floor(Date.now() / 1000));
-    if (onchainOffer.expiry !== 0n && nowSec >= onchainOffer.expiry) {
+    // Match the hook's own check (`block.timestamp > o.expiry`) exactly,
+    // so we don't rebalance one second before the hook would consider the
+    // offer expired.
+    if (onchainOffer.expiry !== 0n && nowSec > onchainOffer.expiry) {
       onchainExpired = true;
       console.log(
         `Active offer storage-flag is true but expired at ${onchainOffer.expiry} (now ${nowSec}). Rebalancing.`,
