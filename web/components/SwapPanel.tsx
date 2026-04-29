@@ -459,23 +459,24 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
               {inputSymbol}
             </span>
           </div>
-          <div className="mt-2 flex items-center gap-3">
+          <div className="mt-2 flex items-center gap-2">
             <input
               type="text"
               inputMode="decimal"
+              size={1}
               placeholder="0.0"
               value={amount}
               onChange={(e) => { setAmount(e.target.value.replace(/[^\d.]/g, '')); setPlanError(null); }}
-              className="flex-1 bg-transparent text-2xl font-medium text-white outline-none"
+              className="min-w-0 flex-1 bg-transparent text-2xl font-medium text-white outline-none"
             />
             <button
               type="button"
               onClick={onMax}
-              className="rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:border-white/20"
+              className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:border-white/20"
             >
               MAX
             </button>
-            <span className="rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">
+            <span className="shrink-0 rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">
               {inputSymbol}
             </span>
           </div>
@@ -503,11 +504,11 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
               {outputSymbol}
             </span>
           </div>
-          <div className="mt-2 flex items-center gap-3">
-            <span className="flex-1 text-2xl font-medium text-white">
+          <div className="mt-2 flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-2xl font-medium text-white">
               {amountOut ? fmtUnits(amountOut, outputDecimals, inputIsUSDC ? 6 : 2) : '0.0'}
             </span>
-            <span className="rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">
+            <span className="shrink-0 rounded-xl bg-white/5 px-3 py-2 text-sm font-semibold text-white">
               {outputSymbol}
             </span>
           </div>
