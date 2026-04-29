@@ -29,6 +29,13 @@
  *   LOOP                      false    // run forever vs single tick
  *   INTERVAL_MS               60000    // base sleep between ticks
  *   JITTER_MS                 15000    // random extra sleep [0, JITTER_MS]
+ *
+ * Observability (all optional):
+ *   METRICS_PORT              0        // expose Prometheus /metrics on this
+ *                                      // port; 0 disables the HTTP server
+ *   ALERT_WEBHOOK_URL         ''       // Slack/Discord-compatible webhook;
+ *                                      // empty disables alerting
+ *   ALERT_COOLDOWN_SECONDS    600      // per-alert-key dedupe window
  */
 import {
   createPublicClient,
@@ -39,6 +46,7 @@ import {
 } from 'viem';
 import { arbitrum } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
+import { createServer } from 'node:http';
 
 const RPC_URL = mustEnv('ARBITRUM_RPC_URL');
 const KEEPER_PRIVATE_KEY = mustEnv('KEEPER_PRIVATE_KEY') as `0x${string}`;
@@ -85,6 +93,11 @@ const ASSET_PER_NATIVE_E18 = BigInt(process.env.ASSET_PER_NATIVE_E18 ?? '0');
 // Loop jitter. Each tick sleeps INTERVAL_MS + random([0, JITTER_MS]).
 const INTERVAL_MS = Number(process.env.INTERVAL_MS ?? '60000');
 const JITTER_MS = Number(process.env.JITTER_MS ?? '15000');
+
+// Observability. Both are opt-in.
+const METRICS_PORT = Number(process.env.METRICS_PORT ?? '0');
+const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
+const ALERT_COOLDOWN_SECONDS = Number(process.env.ALERT_COOLDOWN_SECONDS ?? '600');
 
 // ReservePricingMode enum (see src/DynamicFeeHookV2.sol):
 //   0 = PRICE_IMPROVEMENT
@@ -158,13 +171,22 @@ function capOfferAmount(idleBalance: bigint): bigint {
 // ---- Metrics --------------------------------------------------------------
 const metrics = {
   startedAt: new Date().toISOString(),
+  startedAtSec: Math.floor(Date.now() / 1000),
   ticks: 0,
   posts: 0,
   rebalances: 0,
   noops: 0,
   errors: 0,
+  alertsSent: 0,
   gasSpentWei: 0n,
   spreadBpsLastFill: 0n,
+  // Gauges, refreshed each tick. -1 / 0n means "unknown".
+  lastTickAtSec: 0,
+  lastIdleAsset: 0n,
+  lastDriftBps: 0n,
+  lastVaultStatus: -1,
+  lastFailedAsset: 0n,
+  lastOfferActive: 0,
 };
 
 function logMetrics() {
@@ -172,7 +194,95 @@ function logMetrics() {
     ...metrics,
     gasSpentWei: metrics.gasSpentWei.toString(),
     spreadBpsLastFill: metrics.spreadBpsLastFill.toString(),
+    lastIdleAsset: metrics.lastIdleAsset.toString(),
+    lastDriftBps: metrics.lastDriftBps.toString(),
+    lastFailedAsset: metrics.lastFailedAsset.toString(),
   });
+}
+
+// ---- Prometheus exposition ------------------------------------------------
+// Hand-rolled to avoid adding prom-client. Format reference:
+// https://prometheus.io/docs/instrumenting/exposition_formats/
+function renderProm(): string {
+  const lines: string[] = [];
+  const push = (
+    name: string,
+    type: 'counter' | 'gauge',
+    help: string,
+    value: bigint | number,
+  ) => {
+    lines.push(`# HELP ${name} ${help}`);
+    lines.push(`# TYPE ${name} ${type}`);
+    lines.push(`${name} ${value.toString()}`);
+  };
+  push('keeper_started_at_seconds', 'gauge', 'Unix start time of keeper process.', metrics.startedAtSec);
+  push('keeper_last_tick_at_seconds', 'gauge', 'Unix time of last completed tick.', metrics.lastTickAtSec);
+  push('keeper_ticks_total', 'counter', 'Total ticks attempted.', metrics.ticks);
+  push('keeper_posts_total', 'counter', 'Successful offerReserveToHookWithMode calls.', metrics.posts);
+  push('keeper_rebalances_total', 'counter', 'Successful rebalanceOfferWithMode calls.', metrics.rebalances);
+  push('keeper_noops_total', 'counter', 'Ticks that took no action.', metrics.noops);
+  push('keeper_errors_total', 'counter', 'Tick or send errors.', metrics.errors);
+  push('keeper_alerts_sent_total', 'counter', 'Webhook alerts emitted (post-cooldown).', metrics.alertsSent);
+  push('keeper_gas_spent_wei', 'counter', 'Cumulative wei spent on successful txs.', metrics.gasSpentWei);
+  push('keeper_spread_bps_last_fill', 'gauge', 'SPREAD_BPS used on the last successful write.', metrics.spreadBpsLastFill);
+  push('keeper_idle_asset', 'gauge', 'Vault idle asset balance observed last tick.', metrics.lastIdleAsset);
+  push('keeper_drift_bps', 'gauge', 'Last observed drift bps (signed).', metrics.lastDriftBps);
+  push('keeper_vault_status', 'gauge', 'VaultLens.vaultStatus enum (-1=unknown).', metrics.lastVaultStatus);
+  push('keeper_failed_distribution_asset', 'gauge', 'Hook failedDistribution[asset] last tick.', metrics.lastFailedAsset);
+  push('keeper_offer_active', 'gauge', '1 if storage-flag active offer existed last tick, else 0.', metrics.lastOfferActive);
+  push('keeper_spread_bps_config', 'gauge', 'Configured SPREAD_BPS env.', SPREAD_BPS);
+  push('keeper_rebalance_drift_bps_config', 'gauge', 'Configured REBALANCE_DRIFT_BPS env.', REBALANCE_DRIFT_BPS);
+  return lines.join('\n') + '\n';
+}
+
+function startMetricsServer() {
+  if (METRICS_PORT === 0) return;
+  const server = createServer((req, res) => {
+    if (req.url === '/metrics') {
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+      res.end(renderProm());
+      return;
+    }
+    if (req.url === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok\n');
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  server.listen(METRICS_PORT, () => {
+    console.log(`[metrics] HTTP server listening on :${METRICS_PORT} (/metrics, /healthz)`);
+  });
+}
+
+// ---- Alerting -------------------------------------------------------------
+// Fires a webhook on operational anomalies. Slack/Discord/Generic JSON
+// compatible: posts `{ text: "..." }`. Per-key cooldown prevents spam when
+// a condition persists across ticks.
+const alertCooldown = new Map<string, number>();
+
+async function alert(key: string, message: string, severity: 'warn' | 'error' = 'warn') {
+  if (!ALERT_WEBHOOK_URL) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const last = alertCooldown.get(key) ?? 0;
+  if (nowSec - last < ALERT_COOLDOWN_SECONDS) return;
+  alertCooldown.set(key, nowSec);
+  const text = `[the-pool keeper][${severity}][${key}] ${message}`;
+  try {
+    const res = await fetch(ALERT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      console.warn(`[alert] webhook returned ${res.status}: ${await res.text().catch(() => '')}`);
+      return;
+    }
+    metrics.alertsSent += 1;
+  } catch (err) {
+    console.warn('[alert] webhook send failed:', err);
+  }
 }
 
 /// Approximate the spread the vault would earn on a single full-inventory
@@ -283,6 +393,7 @@ async function sendOrPrint(
     else metrics.rebalances += 1;
   } else {
     metrics.errors += 1;
+    await alert('tx-reverted', `${functionName} reverted on-chain. Tx: ${hash}`, 'error');
   }
 }
 
@@ -350,12 +461,16 @@ async function tick() {
     );
   }
 
+  metrics.lastVaultStatus = Number(vaultStatus);
+
   if (vaultStatus === VAULT_STATUS_PAUSED) {
     console.log('Vault is PAUSED. Skipping.');
+    await alert('vault-paused', `Vault ${VAULT} is PAUSED.`, 'warn');
     return;
   }
   if (vaultStatus === VAULT_STATUS_UNCONFIGURED) {
     console.log('Vault is UNCONFIGURED. Skipping.');
+    await alert('vault-unconfigured', `Vault ${VAULT} is UNCONFIGURED.`, 'warn');
     return;
   }
 
@@ -407,10 +522,22 @@ async function tick() {
     vaultStatus,
   });
 
+  // Update gauges before any return path so /metrics reflects the latest tick.
+  metrics.lastTickAtSec = Math.floor(Date.now() / 1000);
+  metrics.lastIdleAsset = idleAsset;
+  metrics.lastDriftBps = driftBps;
+  metrics.lastFailedAsset = failedAsset;
+  metrics.lastOfferActive = active ? 1 : 0;
+
   if (failedAsset > 0n) {
     console.warn(
       `ALERT: failedDistribution[${asset}] = ${failedAsset}. Owner must call ` +
         `acknowledgeFailedDistribution(...) on the hook after off-chain settlement.`,
+    );
+    await alert(
+      'failed-distribution',
+      `failedDistribution[${asset}]=${failedAsset} on hook ${HOOK}. Owner must acknowledgeFailedDistribution.`,
+      'error',
     );
   }
 
@@ -500,12 +627,15 @@ async function safeTick() {
   } catch (err) {
     metrics.errors += 1;
     console.error('Keeper tick failed:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    await alert('tick-error', `Tick failed: ${msg}`, 'error');
   } finally {
     logMetrics();
   }
 }
 
 async function main() {
+  startMetricsServer();
   await safeTick();
 
   if (process.env.LOOP !== 'true') return;
