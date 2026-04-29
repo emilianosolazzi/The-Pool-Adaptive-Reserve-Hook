@@ -573,6 +573,39 @@ export function ValueCalculator({ deployment, chainId }: Props) {
           </div>
         </div>
 
+        {/* Scenario presets. Set both the volatile-hit rate and the vault
+            liquidity share at once. Defaults match "Moderate". */}
+        <div className="mt-4">
+          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Scenario presets</div>
+          <div className="flex flex-wrap gap-2">
+            {([
+              { key: 'conservative', label: 'Conservative', vol: '10', share: '0.5', hint: '10% volatile / 0.5% LP share' },
+              { key: 'moderate', label: 'Moderate (default)', vol: '20', share: '1', hint: '20% volatile / 1% LP share' },
+              { key: 'upside', label: 'Upside', vol: '30', share: '3', hint: '30% volatile / 3% LP share' },
+            ] as const).map((p) => {
+              const isActive = volatilityHitRatePct === p.vol && vaultLiquiditySharePct === p.share;
+              return (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => {
+                    setVolatilityHitRatePct(p.vol);
+                    setVaultLiquiditySharePct(p.share);
+                  }}
+                  title={p.hint}
+                  className={`rounded border px-3 py-1.5 text-xs font-medium transition ${
+                    isActive
+                      ? 'border-blue-500 bg-blue-500/15 text-white'
+                      : 'border-zinc-600 bg-zinc-700/40 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="mt-6 rounded bg-zinc-700/30 p-4">
           <h3 className="mb-3 text-lg font-medium text-zinc-300">Return Projection</h3>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">

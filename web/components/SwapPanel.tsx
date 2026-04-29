@@ -428,14 +428,15 @@ export function SwapPanel({ deployment, chainId, explorerBase }: SwapPanelProps)
           </div>
         ) : null}
         {!poolSeeded ? (
-          <div className="mb-4 rounded-xl border border-amber-400/30 bg-amber-500/5 p-3 text-xs text-amber-200">
+          <div className="mb-4 rounded-xl border border-amber-400/30 bg-amber-500/5 p-3 text-xs text-amber-200 break-words">
             <div className="font-semibold text-amber-100">Low deployed liquidity (informational)</div>
             <div className="mt-1 text-amber-200/80">
               Vault reports little or no deployed liquidity. Quotes from the V4Quoter are
               authoritative — if a quote returns, the swap is enabled. Quote failures
               may indicate the pool has no in-range liquidity (e.g. a single-sided USDC
-              position outside the live tick), in which case
-              <code className="text-amber-100">NoLiquidityToReceiveFees</code> can revert.
+              position outside the live tick), in which case{' '}
+              <code className="break-all text-amber-100">NoLiquidityToReceiveFees</code>{' '}
+              can revert.
             </div>
           </div>
         ) : null}
