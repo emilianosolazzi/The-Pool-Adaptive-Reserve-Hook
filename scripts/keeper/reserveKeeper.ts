@@ -5,9 +5,10 @@
  * `LiquidityVaultV2` so the vault monetises spread vs. the AMM mid as
  * additional NAV. See `docs/HOOK-RISK-RUNBOOK.md` §3.4 for the policy.
  *
- * The keeper key must be the vault `owner()` — both
- * `offerReserveToHookWithMode` and `rebalanceOfferWithMode` are
- * `onlyOwner`.
+ * By default the keeper key must be the vault `owner()`. If
+ * `KEEPER_WRITE_TARGET` is set, the vault owner must be that controller
+ * contract and the keeper key must be allowlisted by
+ * `controller.reserveKeepers(keeper)`.
  *
  * Required env:
  *   ARBITRUM_RPC_URL       JSON-RPC endpoint
@@ -15,6 +16,7 @@
  *   VAULT                  LiquidityVaultV2 address
  *   VAULT_LENS             VaultLens address (provides vaultStatus(address))
  *   HOOK                   DynamicFeeHookV2 address
+ *   KEEPER_WRITE_TARGET    Optional controller address that owns the vault
  *
  * Tunables (all optional):
  *   SPREAD_BPS                25       // vault premium vs AMM mid (bps)
@@ -54,12 +56,9 @@ const KEEPER_PRIVATE_KEY = mustEnv('KEEPER_PRIVATE_KEY') as `0x${string}`;
 const VAULT = mustEnv('VAULT') as Address;
 const VAULT_LENS = mustEnv('VAULT_LENS') as Address;
 const HOOK = mustEnv('HOOK') as Address;
-
-// Optional: when the vault's owner has been transferred to a
-// VaultOwnerController, point writes (offer/rebalance/cancel/collect) at
-// the controller while reads stay on the vault. Defaults to VAULT for
-// back-compat with the pre-controller deployment.
-const KEEPER_WRITE_TARGET = (process.env.KEEPER_WRITE_TARGET ?? VAULT) as Address;
+const KEEPER_WRITE_TARGET = process.env.KEEPER_WRITE_TARGET as Address | undefined;
+const WRITE_TARGET = KEEPER_WRITE_TARGET || VAULT;
+const CONTROLLER_MODE = Boolean(KEEPER_WRITE_TARGET);
 
 const DRY_RUN = process.env.DRY_RUN === 'true';
 
@@ -129,8 +128,16 @@ const vaultAbi = parseAbi([
   'function asset() view returns (address)',
   'function owner() view returns (address)',
   'function reserveHook() view returns (address)',
+]);
+
+const reserveWriteAbi = parseAbi([
   'function offerReserveToHookWithMode(address sellCurrency,uint128 sellAmount,uint160 vaultSqrtPriceX96,uint64 expiry,uint8 mode)',
   'function rebalanceOfferWithMode(address sellCurrency,uint128 sellAmount,uint160 vaultSqrtPriceX96,uint64 expiry,uint8 mode)',
+]);
+
+const controllerGuardAbi = parseAbi([
+  'function reserveKeepers(address keeper) view returns (bool)',
+  'function vault() view returns (address)',
 ]);
 
 const vaultLensAbi = parseAbi([
@@ -344,8 +351,8 @@ async function sendOrPrint(
       const [gas, gasPrice] = await Promise.all([
         publicClient.estimateContractGas({
           account,
-          address: KEEPER_WRITE_TARGET,
-          abi: vaultAbi,
+          address: WRITE_TARGET,
+          abi: reserveWriteAbi,
           functionName,
           args,
         }),
@@ -381,8 +388,8 @@ async function sendOrPrint(
 
   const { request } = await publicClient.simulateContract({
     account,
-    address: KEEPER_WRITE_TARGET,
-    abi: vaultAbi,
+    address: WRITE_TARGET,
+    abi: reserveWriteAbi,
     functionName,
     args,
   });
@@ -460,32 +467,42 @@ async function tick() {
     );
   }
 
-  // Two modes:
-  //  1. Direct mode (KEEPER_WRITE_TARGET == VAULT): keeper EOA must be the
-  //     vault owner because the vault's reserve fns are onlyOwner.
-  //  2. Controller mode (KEEPER_WRITE_TARGET == VaultOwnerController): the
-  //     vault owner must be the controller. The keeper EOA is whitelisted
-  //     on the controller via setReserveKeeper(); the controller (not the
-  //     EOA) is the vault owner. We sanity-check that wiring here so a
-  //     misconfigured env fails fast instead of every tx reverting.
-  if (KEEPER_WRITE_TARGET.toLowerCase() === VAULT.toLowerCase()) {
-    if (ownerAddr.toLowerCase() !== account.address.toLowerCase()) {
+  if (CONTROLLER_MODE) {
+    const writeTargetLower = WRITE_TARGET.toLowerCase();
+    if (ownerAddr.toLowerCase() !== writeTargetLower) {
       throw new Error(
-        `Keeper key ${account.address} is not vault owner ${ownerAddr}. ` +
-          `offerReserveToHookWithMode/rebalanceOfferWithMode are onlyOwner. ` +
-          `If using a VaultOwnerController, set KEEPER_WRITE_TARGET=<controller>.`,
+        `KEEPER_WRITE_TARGET ${WRITE_TARGET} is not vault owner ${ownerAddr}.`,
       );
     }
-  } else {
-    if (ownerAddr.toLowerCase() !== KEEPER_WRITE_TARGET.toLowerCase()) {
+
+    const [controllerVault, keeperAllowed] = await Promise.all([
+      publicClient.readContract({
+        address: WRITE_TARGET,
+        abi: controllerGuardAbi,
+        functionName: 'vault',
+      }),
+      publicClient.readContract({
+        address: WRITE_TARGET,
+        abi: controllerGuardAbi,
+        functionName: 'reserveKeepers',
+        args: [account.address],
+      }),
+    ]);
+
+    if (controllerVault.toLowerCase() !== VAULT.toLowerCase()) {
       throw new Error(
-        `KEEPER_WRITE_TARGET=${KEEPER_WRITE_TARGET} but vault owner is ${ownerAddr}. ` +
-          `Run vault.transferOwnership(controller) and controller.acceptVaultOwnership() first.`,
+        `KEEPER_WRITE_TARGET ${WRITE_TARGET} controls vault ${controllerVault}, not env VAULT ${VAULT}.`,
       );
     }
-    console.log(
-      `[controller-mode] writes -> ${KEEPER_WRITE_TARGET}; vault owner = controller; ` +
-        `keeper EOA must be whitelisted via controller.setReserveKeeper(${account.address}, true).`,
+    if (!keeperAllowed) {
+      throw new Error(
+        `Keeper key ${account.address} is not allowlisted in controller.reserveKeepers.`,
+      );
+    }
+  } else if (ownerAddr.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error(
+      `Keeper key ${account.address} is not vault owner ${ownerAddr}. ` +
+        `Set KEEPER_WRITE_TARGET to the controller when the vault is controller-owned.`,
     );
   }
 
@@ -536,6 +553,8 @@ async function tick() {
 
   console.log({
     keeper: account.address,
+    writeTarget: WRITE_TARGET,
+    controllerMode: CONTROLLER_MODE,
     asset,
     idleAsset: idleAsset.toString(),
     active,
