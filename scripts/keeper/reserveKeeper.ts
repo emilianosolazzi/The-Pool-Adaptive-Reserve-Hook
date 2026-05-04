@@ -33,8 +33,9 @@
  *   JITTER_MS                 15000    // random extra sleep [0, JITTER_MS]
  *
  * Observability (all optional):
- *   METRICS_PORT              0        // expose Prometheus /metrics on this
- *                                      // port; 0 disables the HTTP server
+ *   METRICS_HOST              127.0.0.1 // bind address for /metrics
+ *   METRICS_PORT              0         // expose Prometheus /metrics on this
+ *                                       // port; 0 disables the HTTP server
  *   ALERT_WEBHOOK_URL         ''       // Slack/Discord-compatible webhook;
  *                                      // empty disables alerting
  *   ALERT_COOLDOWN_SECONDS    600      // per-alert-key dedupe window
@@ -48,7 +49,7 @@ import {
 } from 'viem';
 import { arbitrum } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 
 const RPC_URL = mustEnv('ARBITRUM_RPC_URL');
 const KEEPER_PRIVATE_KEY = mustEnv('KEEPER_PRIVATE_KEY') as `0x${string}`;
@@ -100,9 +101,14 @@ const INTERVAL_MS = Number(process.env.INTERVAL_MS ?? '60000');
 const JITTER_MS = Number(process.env.JITTER_MS ?? '15000');
 
 // Observability. Both are opt-in.
+const METRICS_HOST = process.env.METRICS_HOST ?? '127.0.0.1';
 const METRICS_PORT = Number(process.env.METRICS_PORT ?? '0');
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
 const ALERT_COOLDOWN_SECONDS = Number(process.env.ALERT_COOLDOWN_SECONDS ?? '600');
+
+if (!Number.isInteger(METRICS_PORT) || METRICS_PORT < 0 || METRICS_PORT > 65_535) {
+  throw new Error(`METRICS_PORT=${process.env.METRICS_PORT} out of range (must be 0-65535)`);
+}
 
 // ReservePricingMode enum (see src/DynamicFeeHookV2.sol):
 //   0 = PRICE_IMPROVEMENT
@@ -248,8 +254,8 @@ function renderProm(): string {
   return lines.join('\n') + '\n';
 }
 
-function startMetricsServer() {
-  if (METRICS_PORT === 0) return;
+async function startMetricsServer(): Promise<Server | undefined> {
+  if (METRICS_PORT === 0) return undefined;
   const server = createServer((req, res) => {
     if (req.url === '/metrics') {
       res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
@@ -264,8 +270,26 @@ function startMetricsServer() {
     res.writeHead(404);
     res.end();
   });
-  server.listen(METRICS_PORT, () => {
-    console.log(`[metrics] HTTP server listening on :${METRICS_PORT} (/metrics, /healthz)`);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(METRICS_PORT, METRICS_HOST, () => {
+      server.off('error', reject);
+      console.log(
+        `[metrics] HTTP server listening on ${METRICS_HOST}:${METRICS_PORT} (/metrics, /healthz)`,
+      );
+      resolve();
+    });
+  });
+  return server;
+}
+
+function closeMetricsServer(server: Server | undefined): Promise<void> {
+  if (!server) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
 }
 
@@ -682,10 +706,13 @@ async function safeTick() {
 }
 
 async function main() {
-  startMetricsServer();
+  const metricsServer = await startMetricsServer();
   await safeTick();
 
-  if (process.env.LOOP !== 'true') return;
+  if (process.env.LOOP !== 'true') {
+    await closeMetricsServer(metricsServer);
+    return;
+  }
 
   // Loop with jittered interval. Avoids predictable, gameable timing.
   // eslint-disable-next-line no-constant-condition

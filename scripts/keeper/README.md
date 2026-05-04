@@ -40,6 +40,12 @@ export JITTER_MS=15000                 # random extra sleep, [0, JITTER_MS]
 export GAS_SAFETY_MULTIPLIER=3         # require expectedSpread >= 3 * gasCost
 export ASSET_PER_NATIVE_E18=0          # asset units per 1e18 wei native;
                                        # 0 disables the profitability guard
+
+# Optional telemetry / alerting
+export METRICS_HOST=127.0.0.1          # Prometheus scrape bind address
+export METRICS_PORT=0                  # 0 disables; use 9464 for /metrics
+export ALERT_WEBHOOK_URL=              # Slack/Discord-compatible webhook
+export ALERT_COOLDOWN_SECONDS=600
 ```
 
 ## Run
@@ -51,8 +57,79 @@ npm run keeper:dry
 # Single tick (broadcasts)
 npm run keeper:once
 
-# Loop (broadcasts every INTERVAL_MS, default 5 min)
+# Loop (broadcasts every INTERVAL_MS, default 1 min)
 npm run keeper:loop
+
+# Loop with local Prometheus metrics enabled
+METRICS_PORT=9464 npm run keeper:loop
+curl http://127.0.0.1:9464/metrics
+```
+
+## Prometheus telemetry (no Docker)
+
+The keeper exposes Prometheus text-format metrics directly from Node's
+built-in HTTP server when `METRICS_PORT` is non-zero. No exporter,
+container, or `prom-client` dependency is required. Keep the default
+`METRICS_HOST=127.0.0.1` when Prometheus runs on the same VM; if you
+scrape from another host, bind only to a private interface or VPN address
+and firewall the port.
+
+Example keeper env for a local Prometheus scrape:
+
+```env
+METRICS_HOST=127.0.0.1
+METRICS_PORT=9464
+```
+
+The repo includes a minimal standalone Prometheus config at
+[`prometheus.yml`](./prometheus.yml):
+
+```bash
+sudo mkdir -p /etc/prometheus /var/lib/prometheus
+sudo cp prometheus.yml /etc/prometheus/prometheus.yml
+```
+
+Install Prometheus from the upstream Linux tarball rather than Docker:
+
+```bash
+curl -LO https://github.com/prometheus/prometheus/releases/download/v<VERSION>/prometheus-<VERSION>.linux-amd64.tar.gz
+tar xzf prometheus-<VERSION>.linux-amd64.tar.gz
+sudo install -m 0755 prometheus-<VERSION>.linux-amd64/prometheus /usr/local/bin/prometheus
+sudo install -m 0755 prometheus-<VERSION>.linux-amd64/promtool /usr/local/bin/promtool
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin prometheus
+sudo chown -R prometheus:prometheus /etc/prometheus /var/lib/prometheus
+promtool check config /etc/prometheus/prometheus.yml
+```
+
+Optional systemd unit for Prometheus at
+`/etc/systemd/system/prometheus.service`:
+
+```ini
+[Unit]
+Description=Prometheus monitoring
+After=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecStart=/usr/local/bin/prometheus \
+   --config.file=/etc/prometheus/prometheus.yml \
+   --storage.tsdb.path=/var/lib/prometheus \
+   --web.listen-address=127.0.0.1:9090
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable it with:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now prometheus
+curl http://127.0.0.1:9090/api/v1/targets
 ```
 
 ## What it does each tick
@@ -93,7 +170,13 @@ WantedBy=multi-user.target
 ```
 
 `/etc/the-pool/keeper.env` should contain the env vars from
-**Configure** above and be `chmod 600 root:keeper`.
+**Configure** above and be `chmod 600 root:keeper`. To enable local
+Prometheus scraping on the same host, add:
+
+```env
+METRICS_HOST=127.0.0.1
+METRICS_PORT=9464
+```
 
 ```bash
 sudo systemctl daemon-reload
